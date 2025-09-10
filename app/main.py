@@ -2,19 +2,19 @@
 import os
 import shutil
 import tempfile
-import jwt
 import datetime
+from jose import jwt, JWTError
 from fastapi import FastAPI, UploadFile, Form, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import create_engine, Column, String, Integer, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from typing import Optional
 import httpx
 import numpy as np
-import torchaudio
-from speechbrain.pretrained import EncoderClassifier, SpectralMaskEnhancement
+from speechbrain.inference import EncoderClassifier, SpectralMaskEnhancement
+from speechbrain.utils.fetching import fetch
 
 # --- Config ---
 SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey")
@@ -24,7 +24,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your_openai_api_key_here")
 
 # --- DB setup ---
 Base = declarative_base()
-engine = create_engine("sqlite:///truevoice.db")
+engine = create_engine("sqlite:///truevoice.db", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 
 
@@ -46,13 +46,10 @@ class TokenData(BaseModel):
     user_id: str
 
 
-def create_access_token(
-    data: dict, expires_delta: Optional[datetime.timedelta] = None
-):
+def create_access_token(data: dict, expires_delta: Optional[datetime.timedelta] = None):
     to_encode = data.copy()
     expire = datetime.datetime.utcnow() + (
-        expires_delta
-        or datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta or datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -61,23 +58,34 @@ def create_access_token(
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        payload = jwt.decode(
-            credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM]
-        )
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
-    except jwt.PyJWTError:
+    except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
 
+# --- DB dependency ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # --- Load Models (once at startup) ---
 speaker_model = EncoderClassifier.from_hparams(
-    source="speechbrain/spkrec-ecapa-voxceleb", savedir="pretrained_models/ecapa"
+    source="speechbrain/spkrec-ecapa-voxceleb",
+    savedir="pretrained_models/ecapa",
+    run_opts={"local_files_only": False},
 )
 
 denoiser = SpectralMaskEnhancement.from_hparams(
-    source="speechbrain/mtl-mimic-voicebank", savedir="pretrained_models/denoiser"
+    source="speechbrain/mtl-mimic-voicebank",
+    savedir="pretrained_models/denoiser",
+    run_opts={"local_files_only": False},
 )
 
 
@@ -85,10 +93,11 @@ denoiser = SpectralMaskEnhancement.from_hparams(
 async def transcribe_audio(audio_path: str) -> str:
     url = "https://api.openai.com/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    files = {"file": open(audio_path, "rb")}
     data = {"model": "whisper-1"}
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=headers, files=files, data=data)
+        with open(audio_path, "rb") as f:
+            files = {"file": f}
+            response = await client.post(url, headers=headers, files=files, data=data)
     if response.status_code != 200:
         raise HTTPException(
             status_code=500, detail=f"Whisper failed: {response.text}"
@@ -97,15 +106,32 @@ async def transcribe_audio(audio_path: str) -> str:
 
 
 def compute_embedding(audio_path: str) -> np.ndarray:
-    # Load audio
-    signal, fs = torchaudio.load(audio_path)
+    # Try torchaudio first (works until 2.9), then fallback to torchcodec
+    try:
+        import torchaudio
+        signal, fs = torchaudio.load(audio_path)
+    except Exception as e:
+        try:
+            import torchcodec
+            from torchcodec.audio import decode_audio
+
+            with open(audio_path, "rb") as f:
+                signal, fs = decode_audio(f.read())
+        except Exception as codec_err:
+            raise RuntimeError(
+                f"Failed to load audio. TorchAudio error: {e}, TorchCodec error: {codec_err}"
+            )
+
+    # Ensure batch dimension (1, T)
+    if signal.dim() == 2 and signal.shape[0] == 1:
+        signal = signal.squeeze(0).unsqueeze(0)
 
     # Denoise
     enhanced = denoiser.enhance_batch(signal)
 
     # Extract embedding
     embedding = speaker_model.encode_batch(enhanced)
-    return embedding.squeeze().detach().cpu().numpy()
+    return embedding.squeeze().detach().cpu().numpy().astype(np.float32)
 
 
 def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
@@ -128,8 +154,8 @@ async def enroll(
     challenge_text: str = Form(...),
     audio: UploadFile = Form(...),
     token: dict = Depends(verify_token),
+    db: Session = Depends(get_db),
 ):
-    db = SessionLocal()
     tmpdir = tempfile.mkdtemp()
     try:
         audio_path = os.path.join(tmpdir, audio.filename)
@@ -160,8 +186,8 @@ async def verify(
     challenge_text: str = Form(...),
     audio: UploadFile = Form(...),
     token: dict = Depends(verify_token),
+    db: Session = Depends(get_db),
 ):
-    db = SessionLocal()
     tmpdir = tempfile.mkdtemp()
     try:
         audio_path = os.path.join(tmpdir, audio.filename)
@@ -173,18 +199,17 @@ async def verify(
             raise HTTPException(status_code=400, detail="Challenge mismatch")
 
         new_embedding = compute_embedding(audio_path)
-        enrollments = (
-            db.query(Enrollment).filter(Enrollment.user_id == user_id).all()
-        )
+        enrollments = db.query(Enrollment).filter(Enrollment.user_id == user_id).all()
         if not enrollments:
             raise HTTPException(status_code=404, detail="No enrollment found")
 
         sims = [
             cosine_similarity(
-                new_embedding, np.frombuffer(e.embedding, dtype=np.float64)
+                new_embedding, np.frombuffer(e.embedding, dtype=np.float32)
             )
             for e in enrollments
         ]
-        return {"verified": max(sims) > 0.75, "similarity": max(sims)}
+        best_sim = max(sims)
+        return {"verified": best_sim > 0.75, "similarity": best_sim}
     finally:
         shutil.rmtree(tmpdir)
