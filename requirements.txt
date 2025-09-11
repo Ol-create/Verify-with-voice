@@ -10,3 +10,5 @@ torch
 torchaudio>=2.5.0     # required for now, but deprecated by 2.9
 torchcodec>=0.1.0     # future-proof replacement for torchaudio.load/save
 numpy                 # required for cosine similarity and embeddings
+soundfile
+python-multipart

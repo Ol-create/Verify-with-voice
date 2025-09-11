@@ -1,0 +1,120 @@
+openapi: 3.0.1
+info:
+  title: TrueVoice API
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8000
+paths:
+  /health:
+    get:
+      summary: Health Check
+      description: Check if the API is alive
+      responses:
+        "200":
+          description: API is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /enroll/{user_id}:
+    post:
+      summary: Enroll User Voice
+      description: Enroll a user's voiceprint with SpeechBrain ECAPA model
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Enrollment successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /verify/{user_id}:
+    post:
+      summary: Verify User Voice
+      description: Verify a user's voice against their enrollment embeddings
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                  match_score:
+                    type: number
+                    format: float
+                  verified:
+                    type: boolean
+
+  /liveness:
+    post:
+      summary: Liveness Check
+      description: Check if the user actually spoke the expected phrase (via Whisper transcription)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                expected_phrase:
+                  type: string
+      responses:
+        "200":
+          description: Liveness result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expected:
+                    type: string
+                  transcription:
+                    type: string
+                  liveness_passed:
+                    type: boolean

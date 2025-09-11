@@ -13,14 +13,13 @@ from sqlalchemy.ext.declarative import declarative_base
 from typing import Optional
 import httpx
 import numpy as np
-from speechbrain.inference import EncoderClassifier, SpectralMaskEnhancement
-from speechbrain.utils.fetching import fetch
+from speechbrain.inference import EncoderClassifier
 
 # --- Config ---
 SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your_openai_api_key_here")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-REMOVED")
 
 # --- DB setup ---
 Base = declarative_base()
@@ -81,12 +80,17 @@ speaker_model = EncoderClassifier.from_hparams(
     savedir="pretrained_models/ecapa",
     run_opts={"local_files_only": False},
 )
+print("✅ Speaker model loaded from pretrained_models/ecapa")
 
-denoiser = SpectralMaskEnhancement.from_hparams(
-    source="speechbrain/mtl-mimic-voicebank",
-    savedir="pretrained_models/denoiser",
-    run_opts={"local_files_only": False},
-)
+
+# Dummy denoiser (no enhancement, just returns input)
+class IdentityDenoiser:
+    def enhance_batch(self, x):
+        return x
+
+
+denoiser = IdentityDenoiser()
+print("⚠️ Using dummy denoiser (no enhancement applied)")
 
 
 # --- Utilities ---
@@ -106,7 +110,6 @@ async def transcribe_audio(audio_path: str) -> str:
 
 
 def compute_embedding(audio_path: str) -> np.ndarray:
-    # Try torchaudio first (works until 2.9), then fallback to torchcodec
     try:
         import torchaudio
         signal, fs = torchaudio.load(audio_path)
@@ -114,7 +117,6 @@ def compute_embedding(audio_path: str) -> np.ndarray:
         try:
             import torchcodec
             from torchcodec.audio import decode_audio
-
             with open(audio_path, "rb") as f:
                 signal, fs = decode_audio(f.read())
         except Exception as codec_err:
@@ -126,10 +128,9 @@ def compute_embedding(audio_path: str) -> np.ndarray:
     if signal.dim() == 2 and signal.shape[0] == 1:
         signal = signal.squeeze(0).unsqueeze(0)
 
-    # Denoise
+    # Apply dummy denoiser (just passes through signal)
     enhanced = denoiser.enhance_batch(signal)
 
-    # Extract embedding
     embedding = speaker_model.encode_batch(enhanced)
     return embedding.squeeze().detach().cpu().numpy().astype(np.float32)
 
