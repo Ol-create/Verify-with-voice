@@ -1,45 +1,48 @@
-import time
-import httpx
-from app.config import settings
+import markovify
+import os
+import random
 
+MODEL_PATH = "app/utils/markov_model.json"
 
-# In-memory store: production should use Redis or DB with TTL
-ACTIVE_CHALLENGES = {}
+def load_training_text(file_path: str) -> str:
+    """Load raw text from a textbook file."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Training file not found: {file_path}")
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read()
 
+def build_model_from_text(text: str, state_size: int = 2):
+    """Train a Markov model from supplied text."""
+    return markovify.Text(text, state_size=state_size)
 
-async def generate_phrase(user_id: str, ttl: int = 5):
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
-    json_payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": "Generate a short random phrase (3-6 words)."}
-        ],
-        "max_tokens": 16,
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, headers=headers, json=json_payload)
-        if resp.status_code != 200:
-            raise RuntimeError(f"OpenAI error: {resp.status_code} - {resp.text}")
+def save_model(model, path: str = MODEL_PATH):
+    """Save trained model to JSON for reuse."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(model.to_json())
 
-        phrase = resp.json()["choices"][0]["message"]["content"].strip()
-        ACTIVE_CHALLENGES[user_id] = {"phrase": phrase, "expires": time.time() + ttl}
-        return phrase
+def load_model(path: str = MODEL_PATH):
+    """Load trained Markov model from JSON."""
+    if not os.path.exists(path):
+        raise FileNotFoundError("Markov model JSON not found. Train it first.")
+    with open(path, "r", encoding="utf-8") as f:
+        return markovify.Text.from_json(f.read())
 
+def generate_challenge(num_words: int = 5) -> str:
+    """Generate a random short phrase for liveness challenge."""
+    try:
+        model = load_model()
+    except FileNotFoundError:
+        # fallback to tiny default text
+        default_text = "The quick brown fox jumps over the lazy dog."
+        model = markovify.Text(default_text)
 
-def validate_challenge(user_id: str, phrase: str) -> bool:
-    data = ACTIVE_CHALLENGES.get(user_id)
-    if not data:
-        return False
+    sentence = None
+    tries = 0
+    while sentence is None and tries < 5:
+        sentence = model.make_sentence(tries=100)
+        tries += 1
 
-    if time.time() > data["expires"]:
-        # expired
-        del ACTIVE_CHALLENGES[user_id]
-        return False
+    if not sentence:
+        sentence = "Please say your verification phrase now."
 
-    # case-insensitive match (you can make it fuzzy if needed)
-    ok = data["phrase"].strip().lower() == phrase.strip().lower()
-
-    # consume challenge
-    del ACTIVE_CHALLENGES[user_id]
-    return ok
+    return " ".join(sentence.split()[:num_words])
