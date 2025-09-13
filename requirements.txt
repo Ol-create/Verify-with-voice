@@ -12,4 +12,9 @@ torchcodec>=0.1.0     # future-proof replacement for torchaudio.load/save
 numpy                 # required for cosine similarity and embeddings
 soundfile
 python-multipart
-markovify
+pydantic_settings
+librosa
+noisereduce
+load_dotenv
+openai
+pydub

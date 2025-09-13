@@ -2,7 +2,6 @@ import datetime
 from sqlalchemy import Column, String, Integer, DateTime, LargeBinary, Float
 from app.db import Base
 
-
 class Enrollment(Base):
     __tablename__ = "enrollments"
 
@@ -10,7 +9,6 @@ class Enrollment(Base):
     user_id = Column(String, index=True)
     embedding = Column(LargeBinary, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
 
 class VerificationLog(Base):
     __tablename__ = "verification_logs"

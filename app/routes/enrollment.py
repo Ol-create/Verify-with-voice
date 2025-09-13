@@ -1,45 +1,70 @@
+# app/routes/enrollment.py
+
 import os
 import tempfile
 import shutil
 import datetime
-from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+
 from app.db import get_db
 from app.models import Enrollment
-from app.utils.audio import compute_embedding
-from app.config import verify_token
-
+from app.utils.audio import compute_embedding, transcribe_audio
+from app.utils.verification import fuzzy_match
+from app.auth import verify_token
 
 router = APIRouter()
 
-# 10 MB max upload size (adjust as needed)
-MAX_FILE_SIZE = 10 * 1024 * 1024  
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 @router.post("/enroll-voice")
 async def enroll_voice(
-    user_id: str = Form(...),
+    challenge_text: str = Form(...),
     audio: UploadFile = Form(...),
-    token: dict = Depends(verify_token),
+    token_data: dict = Depends(verify_token),   # ✅ Extract user_id from token
     db: Session = Depends(get_db),
 ):
-    # 1. Prevent duplicate enrollment
+    user_id = token_data.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    # ✅ Validate audio input
+    if not audio:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No audio file provided",
+        )
+
+    if not audio.content_type.startswith("audio/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file type. Please upload an audio file.",
+        )
+
+    # ✅ Prevent duplicate enrollment
     existing = db.query(Enrollment).filter(Enrollment.user_id == user_id).first()
     if existing:
-        raise HTTPException(status_code=400, detail="User already enrolled")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User already enrolled",
+        )
 
-    # 2. Use SpooledTemporaryFile with size limit
+    # ✅ Save file temporarily (spooled to RAM/disk)
     with tempfile.SpooledTemporaryFile(max_size=MAX_FILE_SIZE) as tmpfile:
         size = 0
-        for chunk in iter(lambda: audio.file.read(1024 * 1024), b""):  # read 1MB chunks
+        for chunk in iter(lambda: audio.file.read(1024 * 1024), b""):  # 1MB chunks
             size += len(chunk)
             if size > MAX_FILE_SIZE:
-                raise HTTPException(status_code=413, detail="File too large")
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="Audio file is too large (max 10MB).",
+                )
             tmpfile.write(chunk)
 
         tmpfile.seek(0)
 
-        # Write to a real file inside a temp dir (so compute_embedding can read it)
+        # ✅ Store file on disk inside tempdir
         tmpdir = tempfile.mkdtemp()
         try:
             audio_path = os.path.join(tmpdir, audio.filename)
@@ -47,7 +72,23 @@ async def enroll_voice(
                 tmpfile.seek(0)
                 shutil.copyfileobj(tmpfile, f)
 
-            # 3. Extract embedding
+            # ✅ Step 1: Transcribe with Whisper
+            transcript = await transcribe_audio(audio_path)
+            if not transcript.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Could not transcribe the audio. Please try again with clearer speech.",
+                )
+
+            # ✅ Step 2: Verify spoken challenge
+            match, ratio = fuzzy_match(transcript, challenge_text, threshold=0.8)
+            if not match:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Challenge phrase mismatch (similarity={ratio:.2f}).",
+                )
+
+            # ✅ Step 3: Compute embedding + save
             embedding = compute_embedding(audio_path)
             db.add(
                 Enrollment(
@@ -57,6 +98,14 @@ async def enroll_voice(
                 )
             )
             db.commit()
-            return {"message": "Enrollment successful"}
+
+            return {
+                "message": "Enrollment successful",
+                "user_id": user_id,
+                "transcript": transcript.strip(),
+                "similarity": ratio,
+            }
+
         finally:
-            shutil.rmtree(tmpdir)
+            # Cleanup always
+            shutil.rmtree(tmpdir, ignore_errors=True)

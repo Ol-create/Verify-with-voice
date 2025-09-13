@@ -5,11 +5,17 @@ from datetime import datetime
 class EnrollmentResponse(BaseModel):
     message: str
 
+    class Config:
+        orm_mode = True
+
 
 class VerificationResponse(BaseModel):
     liveness_verified: bool
     identity_verified: bool
     similarity: float
+
+    class Config:
+        orm_mode = True
 
 
 class RiskScoreResponse(BaseModel):
@@ -18,6 +24,20 @@ class RiskScoreResponse(BaseModel):
     liveness_verified: bool
     identity_verified: bool
     timestamp: datetime
-    
+
     class Config:
         orm_mode = True
+
+
+class TokenData(BaseModel):
+    user_id: str
+
+
+# ✅ Moved here from token.py
+class TokenRequest(BaseModel):
+    user_id: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

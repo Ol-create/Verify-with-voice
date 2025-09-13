@@ -3,7 +3,7 @@ from openai import OpenAI
 from difflib import SequenceMatcher
 import numpy as np
 import torchaudio
-from app.utils.audio import denoise_audio
+# from app.utils.audio import denoise_audio
 from app.utils.embedding import speaker_model
 
 

@@ -1,17 +1,17 @@
+# app/routes/verification.py
+
 import os
 import shutil
 import tempfile
 import numpy as np
 from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+
 from app.db import get_db
-from app.models import Enrollment
-from app.utils.verification import (
-    transcribe_audio,
-    compute_embedding,
-    cosine_similarity,
-    fuzzy_match
-)
+from app.models import Enrollment, VerificationLog
+from app.utils.audio import transcribe_audio, compute_embedding   # ✅ updated imports
+from app.utils.verification import cosine_similarity, fuzzy_match
+from app.auth import verify_token
 
 router = APIRouter()
 
@@ -24,11 +24,20 @@ MAX_ENROLLMENTS = 5
 
 @router.post("/secure-verify-voice")
 async def secure_verify(
-    user_id: str = Form(...),
     challenge_text: str = Form(...),
     audio: UploadFile = Form(...),
     db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_token),   # ✅ enforce JWT
 ):
+    """
+    Secure verification endpoint.
+    Requires Bearer token in the Authorization header.
+    Extracts `user_id` from token instead of request body.
+    """
+    user_id = token_data.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
     tmpdir = tempfile.mkdtemp()
     try:
         # Save upload to temp file
@@ -37,9 +46,19 @@ async def secure_verify(
             shutil.copyfileobj(audio.file, f)
 
         # --- Step 1: Transcribe with Whisper ---
-        transcript = transcribe_audio(audio_path)
+        transcript = await transcribe_audio(audio_path)
         matched, ratio = fuzzy_match(transcript, challenge_text)
         if not matched:
+            # ❌ Log failed attempt
+            log = VerificationLog(
+                user_id=user_id,
+                phrase=transcript,
+                similarity=0.0,
+                liveness_verified=0,
+                identity_verified=0,
+            )
+            db.add(log)
+            db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Challenge mismatch (similarity {ratio:.2f})"
@@ -48,7 +67,6 @@ async def secure_verify(
         # --- Step 2: Speaker embedding + similarity ---
         new_embedding = compute_embedding(audio_path)
 
-        # Limit enrollment records for efficiency (e.g., latest 5)
         enrollments = (
             db.query(Enrollment)
             .filter(Enrollment.user_id == user_id)
@@ -72,8 +90,21 @@ async def secure_verify(
         ]
         best_sim = max(sims)
 
+        verified = best_sim > SIMILARITY_THRESHOLD
+
+        # ✅ Save verification attempt
+        log = VerificationLog(
+            user_id=user_id,
+            phrase=transcript,
+            similarity=float(best_sim),
+            liveness_verified=1 if matched else 0,
+            identity_verified=1 if verified else 0,
+        )
+        db.add(log)
+        db.commit()
+
         return {
-            "verified": best_sim > SIMILARITY_THRESHOLD,
+            "verified": verified,
             "similarity": best_sim,
             "transcript": transcript,
             "challenge_match": ratio
