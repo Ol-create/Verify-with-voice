@@ -19,3 +19,4 @@ load_dotenv
 openai
 pydub
 psycopg2-binary
+boto3

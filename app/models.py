@@ -8,6 +8,7 @@ class Enrollment(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True)
     embedding = Column(LargeBinary, nullable=False)
+    audio_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class VerificationLog(Base):

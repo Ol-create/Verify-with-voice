@@ -11,6 +11,7 @@ from app.db import get_db
 from app.models import Enrollment
 from app.utils.audio import compute_embedding, transcribe_audio
 from app.utils.verification import fuzzy_match
+from app.utils.storage import upload_audio   # ✅ updated import
 from app.auth import verify_token
 
 router = APIRouter()
@@ -88,12 +89,16 @@ async def enroll_voice(
                     detail=f"Challenge phrase mismatch (similarity={ratio:.2f}).",
                 )
 
-            # ✅ Step 3: Compute embedding + save
+            # ✅ Step 3: Upload raw audio to S3
+            s3_uri = upload_audio(audio_path, user_id, audio.filename)
+
+            # ✅ Step 4: Compute embedding + save
             embedding = compute_embedding(audio_path)
             db.add(
                 Enrollment(
                     user_id=user_id,
                     embedding=embedding.tobytes(),
+                    audio_url=s3_uri,   # ✅ NEW field in model
                     created_at=datetime.datetime.utcnow(),
                 )
             )
@@ -104,6 +109,7 @@ async def enroll_voice(
                 "user_id": user_id,
                 "transcript": transcript.strip(),
                 "similarity": ratio,
+                "audio_url": s3_uri,   # ✅ return S3 link
             }
 
         finally:

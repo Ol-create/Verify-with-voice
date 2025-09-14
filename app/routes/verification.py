@@ -3,14 +3,16 @@
 import os
 import shutil
 import tempfile
+import uuid
 import numpy as np
 from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Enrollment, VerificationLog
-from app.utils.audio import transcribe_audio, compute_embedding   # ✅ updated imports
+from app.utils.audio import transcribe_audio, compute_embedding
 from app.utils.verification import cosine_similarity, fuzzy_match
+from app.utils.storage import upload_audio   # ✅ NEW
 from app.auth import verify_token
 
 router = APIRouter()
@@ -27,7 +29,7 @@ async def secure_verify(
     challenge_text: str = Form(...),
     audio: UploadFile = Form(...),
     db: Session = Depends(get_db),
-    token_data: dict = Depends(verify_token),   # ✅ enforce JWT
+    token_data: dict = Depends(verify_token),
 ):
     """
     Secure verification endpoint.
@@ -89,8 +91,14 @@ async def secure_verify(
             for e in enrollments
         ]
         best_sim = max(sims)
-
         verified = best_sim > SIMILARITY_THRESHOLD
+
+        # --- Step 3: Upload verification audio to S3 ---
+        s3_uri = upload_audio(
+            audio_path,
+            f"verifications/{user_id}/{uuid.uuid4()}-{audio.filename}",
+            audio.filename
+        )
 
         # ✅ Save verification attempt
         log = VerificationLog(
@@ -107,7 +115,8 @@ async def secure_verify(
             "verified": verified,
             "similarity": best_sim,
             "transcript": transcript,
-            "challenge_match": ratio
+            "challenge_match": ratio,
+            "audio_url": s3_uri,   # ✅ return S3 link for verification attempt
         }
 
     finally:
