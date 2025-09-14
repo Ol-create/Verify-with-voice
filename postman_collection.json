@@ -1,70 +1,143 @@
 {
   "info": {
-    "name": "TrueVoice API",
-    "_postman_id": "f9d6f1ac-4b6f-11ee-be56-0242ac120002",
-    "description": "Postman collection for TrueVoice Voice Verification API",
+    "name": "My FastAPI Collection",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
     {
-      "name": "Health Check",
+      "name": "POST /api/enroll-voice",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:8000/api/enroll-voice",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8000",
+          "path": [
+            "api",
+            "enroll-voice"
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET /api/challenge",
       "request": {
         "method": "GET",
-        "header": [],
-        "url": "{{baseUrl}}/health"
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:8000/api/challenge",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8000",
+          "path": [
+            "api",
+            "challenge"
+          ]
+        }
       }
     },
     {
-      "name": "Enroll Voice",
+      "name": "GET /api/health",
       "request": {
-        "method": "POST",
+        "method": "GET",
         "header": [
-          { "key": "accept", "value": "application/json" }
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            { "key": "file", "type": "file", "src": "sample_audio.wav" }
+        "url": {
+          "raw": "http://127.0.0.1:8000/api/health",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8000",
+          "path": [
+            "api",
+            "health"
           ]
-        },
-        "url": "{{baseUrl}}/enroll/12345"
+        }
       }
     },
     {
-      "name": "Verify Voice",
+      "name": "POST /api/token",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "accept", "value": "application/json" }
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            { "key": "file", "type": "file", "src": "test_audio.wav" }
+        "url": {
+          "raw": "http://127.0.0.1:8000/api/token",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8000",
+          "path": [
+            "api",
+            "token"
           ]
-        },
-        "url": "{{baseUrl}}/verify/12345"
+        }
       }
     },
     {
-      "name": "Liveness Check",
+      "name": "POST /api/secure-verify-voice",
       "request": {
         "method": "POST",
         "header": [
-          { "key": "accept", "value": "application/json" }
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            { "key": "file", "type": "file", "src": "liveness_test.wav" },
-            { "key": "expected_phrase", "value": "My voice is my password", "type": "text" }
+        "url": {
+          "raw": "http://127.0.0.1:8000/api/secure-verify-voice",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8000",
+          "path": [
+            "api",
+            "secure-verify-voice"
           ]
-        },
-        "url": "{{baseUrl}}/liveness"
+        }
       }
     }
-  ],
-  "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8000" }
   ]
 }
