@@ -2,6 +2,16 @@ import datetime
 from sqlalchemy import Column, String, Integer, DateTime, LargeBinary, Float
 from app.db import Base
 
+class Company(Base):
+    __tablename__ = "companies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    api_key = Column(String, unique=True, index=True)   # like "tv_123456"
+    api_secret = Column(String, nullable=False)         # securely generated
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 class Enrollment(Base):
     __tablename__ = "enrollments"
 

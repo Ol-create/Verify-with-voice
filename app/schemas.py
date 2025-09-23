@@ -36,8 +36,10 @@ class TokenData(BaseModel):
 # ✅ Moved here from token.py
 class TokenRequest(BaseModel):
     user_id: str
+    lang: str = "en" 
 
 
 class TokenResponse(BaseModel):
+    lang: str
     access_token: str
     token_type: str = "bearer"
