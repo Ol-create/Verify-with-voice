@@ -1,0 +1,8 @@
+venv310/
+__pycache__/
+.git
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.db

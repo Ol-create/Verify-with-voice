@@ -1,5 +1,5 @@
-fastapi
-uvicorn
+fastapi==0.111.0
+uvicorn==0.30.3
 sqlalchemy
 httpx
 python-jose
@@ -7,16 +7,19 @@ pytest
 pytest-asyncio
 speechbrain
 torch
-torchaudio>=2.5.0     # required for now, but deprecated by 2.9
-torchcodec>=0.1.0     # future-proof replacement for torchaudio.load/save
-numpy                 # required for cosine similarity and embeddings
+torchaudio>=2.5.0
+torchcodec>=0.1.0
+numpy
 soundfile
 python-multipart
-pydantic_settings
+pydantic==2.8.2
+pydantic-core==2.20.1
+pydantic-settings==2.3.4
 librosa
 noisereduce
-load_dotenv
+python-dotenv
 openai
 pydub
 psycopg2-binary
 boto3
+mangum
