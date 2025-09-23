@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException, status
 from uuid import UUID
 
-from app.database import get_db
+from app.db import get_db
 from app.models import User, Company
 from app.schemas import TokenRequest, TokenResponse
 from app.auth import create_access_token

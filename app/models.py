@@ -1,9 +1,22 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, LargeBinary, Float, ForeignKey
+from sqlalchemy import Column, String, DateTime, LargeBinary, Float, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.db import Base
+
+
+class Challenge(Base):
+    __tablename__ = "challenges"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    text = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # ✅ Many-to-one: Challenge → User
+    user = relationship("User", back_populates="challenges")
+
 
 class Company(Base):
     __tablename__ = "companies"
@@ -14,26 +27,31 @@ class Company(Base):
     api_secret = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+    # ✅ Implicit backref: Company.users
+    users = relationship("User", back_populates="company")
+
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id"))
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
     external_user_id = Column(String, index=True)   # company’s own user ID
     lang = Column(String, default="en")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    company = relationship("Company", backref="users")
+    # ✅ Relationships
+    company = relationship("Company", back_populates="users")
     enrollments = relationship("Enrollment", back_populates="user")
     logs = relationship("VerificationLog", back_populates="user")
+    challenges = relationship("Challenge", back_populates="user")
 
 
 class Enrollment(Base):
     __tablename__ = "enrollments"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     embedding = Column(LargeBinary, nullable=False)
     audio_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -45,11 +63,11 @@ class VerificationLog(Base):
     __tablename__ = "verification_logs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     phrase = Column(String)
     similarity = Column(Float)
-    liveness_verified = Column(String)   # or Boolean if you prefer
-    identity_verified = Column(String)
+    liveness_verified = Column(Boolean, default=False)
+    identity_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="logs")
