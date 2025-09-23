@@ -4,30 +4,29 @@ import os
 import shutil
 import tempfile
 import uuid
+import datetime
 import numpy as np
-from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Enrollment, VerificationLog
+from app.models import Enrollment, VerificationLog, Challenge
 from app.utils.audio import transcribe_audio, compute_embedding
 from app.utils.verification import cosine_similarity, fuzzy_match
-from app.utils.storage import upload_audio   # ✅ NEW
+from app.utils.storage import upload_audio
 from app.auth import verify_token
 
 router = APIRouter()
 
 # Centralized threshold constant
-SIMILARITY_THRESHOLD = 0.75  
-
-# Max enrollments to compare against (for performance)
-MAX_ENROLLMENTS = 5  
+SIMILARITY_THRESHOLD = 0.75
+MAX_ENROLLMENTS = 5  # Max enrollments to compare against
+CHALLENGE_TTL = 30   # seconds
 
 
 @router.post("/secure-verify-voice")
 async def secure_verify(
-    challenge_text: str = Form(...),
-    audio: UploadFile = Form(...),
+    audio: UploadFile,
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_token),
 ):
@@ -40,6 +39,29 @@ async def secure_verify(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
+    # ✅ Get latest challenge
+    challenge = (
+        db.query(Challenge)
+        .filter(Challenge.user_id == user_id)
+        .order_by(Challenge.created_at.desc())
+        .first()
+    )
+
+    if not challenge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active challenge found"
+        )
+
+    # ✅ Enforce expiration
+    if (datetime.datetime.utcnow() - challenge.created_at).total_seconds() > CHALLENGE_TTL:
+        db.delete(challenge)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Challenge expired"
+        )
+
     tmpdir = tempfile.mkdtemp()
     try:
         # Save upload to temp file
@@ -49,9 +71,9 @@ async def secure_verify(
 
         # --- Step 1: Transcribe with Whisper ---
         transcript = await transcribe_audio(audio_path)
-        matched, ratio = fuzzy_match(transcript, challenge_text)
+        matched, ratio = fuzzy_match(transcript, challenge.text, threshold=0.8)
+
         if not matched:
-            # ❌ Log failed attempt
             log = VerificationLog(
                 user_id=user_id,
                 phrase=transcript,
@@ -60,7 +82,11 @@ async def secure_verify(
                 identity_verified=0,
             )
             db.add(log)
+
+            # ❌ Invalidate challenge on mismatch
+            db.delete(challenge)
             db.commit()
+
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Challenge mismatch (similarity {ratio:.2f})"
@@ -78,6 +104,9 @@ async def secure_verify(
         )
 
         if not enrollments:
+            # ❌ Invalidate challenge if no enrollments exist
+            db.delete(challenge)
+            db.commit()
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No enrollment found"
@@ -109,6 +138,10 @@ async def secure_verify(
             identity_verified=1 if verified else 0,
         )
         db.add(log)
+
+        # ✅ Invalidate challenge after use (success)
+        db.delete(challenge)
+
         db.commit()
 
         return {
@@ -116,8 +149,14 @@ async def secure_verify(
             "similarity": best_sim,
             "transcript": transcript,
             "challenge_match": ratio,
-            "audio_url": s3_uri,   # ✅ return S3 link for verification attempt
+            "audio_url": s3_uri,   # ✅ return S3 link
         }
 
+    except Exception as e:
+        # ✅ Invalidate challenge on any exception
+        db.delete(challenge)
+        db.commit()
+        raise e
+
     finally:
-        shutil.rmtree(tmpdir)
+        shutil.rmtree(tmpdir, ignore_errors=True)
