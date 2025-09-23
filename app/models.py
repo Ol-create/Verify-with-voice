@@ -11,6 +11,14 @@ class Company(Base):
     api_secret = Column(String, nullable=False)         # securely generated
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, index=True)  # ForeignKey to Company.id
+    external_user_id = Column(String, index=True)  # the company’s own user ID
+    lang = Column(String, default="en")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class Enrollment(Base):
     __tablename__ = "enrollments"
