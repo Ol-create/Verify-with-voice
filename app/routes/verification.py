@@ -6,7 +6,10 @@ import tempfile
 import uuid
 import datetime
 import numpy as np
-from fastapi import APIRouter, UploadFile, Depends, HTTPException, status
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+from fastapi import APIRouter, UploadFile, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -15,13 +18,29 @@ from app.utils.audio import transcribe_audio, compute_embedding
 from app.utils.verification import cosine_similarity, fuzzy_match
 from app.utils.storage import upload_audio
 from app.auth import verify_token
+from app.anti_spoofing import (
+    aasist_score,
+    lcnn_score,
+    cqcc_gmm_score,
+    normalize_score,
+    fuse_scores,
+    logistic_fusion,
+)
 
 router = APIRouter()
 
-# Centralized threshold constant
 SIMILARITY_THRESHOLD = 0.75
-MAX_ENROLLMENTS = 5  # Max enrollments to compare against
-CHALLENGE_TTL = 30   # seconds
+MAX_ENROLLMENTS = 5
+CHALLENGE_TTL = 30
+SPOOF_THRESHOLD = 0.5  # if spoof_prob > this -> reject
+
+# ThreadPool for blocking detector calls
+_DETECTOR_POOL = ThreadPoolExecutor(max_workers=3)
+
+
+async def _run_detector_in_executor(fn, audio_path: str):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_DETECTOR_POOL, fn, audio_path)
 
 
 @router.post("/secure-verify-voice")
@@ -30,37 +49,25 @@ async def secure_verify(
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_token),
 ):
-    """
-    Secure verification endpoint.
-    Requires Bearer token in the Authorization header.
-    Extracts `user_id` from token instead of request body.
-    """
     user_id = token_data.get("user_id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    # ✅ Get latest challenge
+    # ✅ Load latest challenge
     challenge = (
         db.query(Challenge)
         .filter(Challenge.user_id == user_id)
         .order_by(Challenge.created_at.desc())
         .first()
     )
-
     if not challenge:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No active challenge found"
-        )
+        raise HTTPException(status_code=400, detail="No active challenge found")
 
-    # ✅ Enforce expiration
+    # ✅ Enforce TTL
     if (datetime.datetime.utcnow() - challenge.created_at).total_seconds() > CHALLENGE_TTL:
         db.delete(challenge)
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Challenge expired"
-        )
+        raise HTTPException(status_code=400, detail="Challenge expired")
 
     tmpdir = tempfile.mkdtemp()
     try:
@@ -69,7 +76,7 @@ async def secure_verify(
         with open(audio_path, "wb") as f:
             shutil.copyfileobj(audio.file, f)
 
-        # --- Step 1: Transcribe with Whisper ---
+        # ---- STEP 1: LIVENESS (Whisper transcription + fuzzy match) ----
         transcript = await transcribe_audio(audio_path)
         matched, ratio = fuzzy_match(transcript, challenge.text, threshold=0.8)
 
@@ -78,21 +85,64 @@ async def secure_verify(
                 user_id=user_id,
                 phrase=transcript,
                 similarity=0.0,
-                liveness_verified=0,
-                identity_verified=0,
+                liveness_verified=False,
+                identity_verified=False,
             )
             db.add(log)
-
-            # ❌ Invalidate challenge on mismatch
             db.delete(challenge)
             db.commit()
-
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Challenge mismatch (similarity {ratio:.2f})"
+                status_code=401,
+                detail=f"Challenge mismatch (similarity {ratio:.2f})",
             )
 
-        # --- Step 2: Speaker embedding + similarity ---
+        # ---- STEP 2: ANTI-SPOOF (run detectors concurrently) ----
+        aasist_future = _run_detector_in_executor(aasist_score, audio_path)
+        lcnn_future = _run_detector_in_executor(lcnn_score, audio_path)
+        cqcc_future = _run_detector_in_executor(cqcc_gmm_score, audio_path)
+
+        aasist_raw, lcnn_raw, cqcc_raw = await asyncio.gather(
+            aasist_future, lcnn_future, cqcc_future
+        )
+
+        # Normalize scores [0,1]
+        aasist_n = normalize_score(aasist_raw, 0.0, 1.0)
+        lcnn_n = normalize_score(lcnn_raw, 0.0, 1.0)
+        cqcc_n = normalize_score(cqcc_raw, 0.0, 1.0)
+
+        detector_scores = {
+            "aasist": float(aasist_n),
+            "lcnn": float(lcnn_n),
+            "cqcc_gmm": float(cqcc_n),
+        }
+
+        # Weighted average fusion
+        fused = fuse_scores(detector_scores)
+        # Optional logistic calibration
+        # spoof_prob = logistic_fusion(fused, bias=0.0, scale=5.0)
+        spoof_prob = float(fused)
+
+        if spoof_prob > SPOOF_THRESHOLD:
+            log = VerificationLog(
+                user_id=user_id,
+                phrase=transcript,
+                similarity=0.0,
+                liveness_verified=True,
+                identity_verified=False,
+                aasist_score=aasist_n,
+                lcnn_score=lcnn_n,
+                cqcc_gmm_score=cqcc_n,
+                spoof_prob=spoof_prob,
+            )
+            db.add(log)
+            db.delete(challenge)
+            db.commit()
+            raise HTTPException(
+                status_code=401,
+                detail=f"Audio flagged as spoof (spoof_prob={spoof_prob:.3f})",
+            )
+
+        # ---- STEP 3: EMBEDDING + SIMILARITY ----
         new_embedding = compute_embedding(audio_path)
 
         enrollments = (
@@ -102,46 +152,41 @@ async def secure_verify(
             .limit(MAX_ENROLLMENTS)
             .all()
         )
-
         if not enrollments:
-            # ❌ Invalidate challenge if no enrollments exist
             db.delete(challenge)
             db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No enrollment found"
-            )
+            raise HTTPException(status_code=404, detail="No enrollment found")
 
         sims = [
-            cosine_similarity(
-                new_embedding,
-                np.frombuffer(e.embedding, dtype=np.float32)
-            )
+            cosine_similarity(new_embedding, np.frombuffer(e.embedding, dtype=np.float32))
             for e in enrollments
         ]
-        best_sim = max(sims)
+        best_sim = float(max(sims))
         verified = best_sim > SIMILARITY_THRESHOLD
 
-        # --- Step 3: Upload verification audio to S3 ---
+        # Upload audio to S3
         s3_uri = upload_audio(
             audio_path,
             f"verifications/{user_id}/{uuid.uuid4()}-{audio.filename}",
-            audio.filename
+            audio.filename,
         )
 
-        # ✅ Save verification attempt
+        # Save verification log
         log = VerificationLog(
             user_id=user_id,
             phrase=transcript,
-            similarity=float(best_sim),
-            liveness_verified=1 if matched else 0,
-            identity_verified=1 if verified else 0,
+            similarity=best_sim,
+            liveness_verified=True,
+            identity_verified=verified,
+            aasist_score=aasist_n,
+            lcnn_score=lcnn_n,
+            cqcc_gmm_score=cqcc_n,
+            spoof_prob=spoof_prob,
         )
         db.add(log)
 
-        # ✅ Invalidate challenge after use (success)
+        # Invalidate challenge after single use
         db.delete(challenge)
-
         db.commit()
 
         return {
@@ -149,14 +194,17 @@ async def secure_verify(
             "similarity": best_sim,
             "transcript": transcript,
             "challenge_match": ratio,
-            "audio_url": s3_uri,   # ✅ return S3 link
+            "audio_url": s3_uri,
+            "detector_scores": detector_scores,
+            "spoof_prob": spoof_prob,
         }
 
     except Exception as e:
-        # ✅ Invalidate challenge on any exception
-        db.delete(challenge)
-        db.commit()
-        raise e
-
+        try:
+            db.delete(challenge)
+            db.commit()
+        except Exception:
+            pass
+        raise
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
