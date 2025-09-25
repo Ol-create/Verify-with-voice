@@ -24,7 +24,6 @@ from app.anti_spoofing import (
     cqcc_gmm_score,
     normalize_score,
     fuse_scores,
-    logistic_fusion,
 )
 
 router = APIRouter()
@@ -32,9 +31,8 @@ router = APIRouter()
 SIMILARITY_THRESHOLD = 0.75
 MAX_ENROLLMENTS = 5
 CHALLENGE_TTL = 30
-SPOOF_THRESHOLD = 0.5  # if spoof_prob > this -> reject
+SPOOF_THRESHOLD = 0.5
 
-# ThreadPool for blocking detector calls
 _DETECTOR_POOL = ThreadPoolExecutor(max_workers=3)
 
 
@@ -53,7 +51,7 @@ async def secure_verify(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    # ✅ Load latest challenge
+    # ✅ Fetch latest challenge
     challenge = (
         db.query(Challenge)
         .filter(Challenge.user_id == user_id)
@@ -71,32 +69,34 @@ async def secure_verify(
 
     tmpdir = tempfile.mkdtemp()
     try:
-        # Save upload to temp file
+        # Save file locally
         audio_path = os.path.join(tmpdir, audio.filename)
         with open(audio_path, "wb") as f:
             shutil.copyfileobj(audio.file, f)
 
-        # ---- STEP 1: LIVENESS (Whisper transcription + fuzzy match) ----
+        # --- Step 1: Transcribe + liveness check ---
         transcript = await transcribe_audio(audio_path)
         matched, ratio = fuzzy_match(transcript, challenge.text, threshold=0.8)
 
         if not matched:
+            # ❌ failed liveness → log with null spoof scores
             log = VerificationLog(
                 user_id=user_id,
                 phrase=transcript,
                 similarity=0.0,
                 liveness_verified=False,
                 identity_verified=False,
+                aasist_score=None,
+                lcnn_score=None,
+                cqcc_gmm_score=None,
+                spoof_prob=None,
             )
             db.add(log)
             db.delete(challenge)
             db.commit()
-            raise HTTPException(
-                status_code=401,
-                detail=f"Challenge mismatch (similarity {ratio:.2f})",
-            )
+            raise HTTPException(status_code=401, detail=f"Challenge mismatch (similarity {ratio:.2f})")
 
-        # ---- STEP 2: ANTI-SPOOF (run detectors concurrently) ----
+        # --- Step 2: Run spoof detectors concurrently ---
         aasist_future = _run_detector_in_executor(aasist_score, audio_path)
         lcnn_future = _run_detector_in_executor(lcnn_score, audio_path)
         cqcc_future = _run_detector_in_executor(cqcc_gmm_score, audio_path)
@@ -105,7 +105,6 @@ async def secure_verify(
             aasist_future, lcnn_future, cqcc_future
         )
 
-        # Normalize scores [0,1]
         aasist_n = normalize_score(aasist_raw, 0.0, 1.0)
         lcnn_n = normalize_score(lcnn_raw, 0.0, 1.0)
         cqcc_n = normalize_score(cqcc_raw, 0.0, 1.0)
@@ -116,13 +115,10 @@ async def secure_verify(
             "cqcc_gmm": float(cqcc_n),
         }
 
-        # Weighted average fusion
-        fused = fuse_scores(detector_scores)
-        # Optional logistic calibration
-        # spoof_prob = logistic_fusion(fused, bias=0.0, scale=5.0)
-        spoof_prob = float(fused)
+        spoof_prob = float(fuse_scores(detector_scores))
 
         if spoof_prob > SPOOF_THRESHOLD:
+            # ❌ spoof detected
             log = VerificationLog(
                 user_id=user_id,
                 phrase=transcript,
@@ -137,14 +133,10 @@ async def secure_verify(
             db.add(log)
             db.delete(challenge)
             db.commit()
-            raise HTTPException(
-                status_code=401,
-                detail=f"Audio flagged as spoof (spoof_prob={spoof_prob:.3f})",
-            )
+            raise HTTPException(status_code=401, detail=f"Audio flagged as spoof (spoof_prob={spoof_prob:.3f})")
 
-        # ---- STEP 3: EMBEDDING + SIMILARITY ----
+        # --- Step 3: Embedding similarity check ---
         new_embedding = compute_embedding(audio_path)
-
         enrollments = (
             db.query(Enrollment)
             .filter(Enrollment.user_id == user_id)
@@ -164,14 +156,13 @@ async def secure_verify(
         best_sim = float(max(sims))
         verified = best_sim > SIMILARITY_THRESHOLD
 
-        # Upload audio to S3
+        # --- Step 4: Upload to S3 + log ---
         s3_uri = upload_audio(
             audio_path,
             f"verifications/{user_id}/{uuid.uuid4()}-{audio.filename}",
             audio.filename,
         )
 
-        # Save verification log
         log = VerificationLog(
             user_id=user_id,
             phrase=transcript,
@@ -184,8 +175,6 @@ async def secure_verify(
             spoof_prob=spoof_prob,
         )
         db.add(log)
-
-        # Invalidate challenge after single use
         db.delete(challenge)
         db.commit()
 

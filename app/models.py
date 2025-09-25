@@ -70,4 +70,11 @@ class VerificationLog(Base):
     identity_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+    
+    # ✅ New anti-spoof fields
+    aasist_score = Column(Float, nullable=True)
+    lcnn_score = Column(Float, nullable=True)
+    cqcc_gmm_score = Column(Float, nullable=True)
+    spoof_prob = Column(Float, nullable=True)
+
     user = relationship("User", back_populates="logs")
