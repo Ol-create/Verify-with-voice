@@ -1,0 +1,6 @@
+[submodule "app/third_party/asvspoof_baselines"]
+	path = app/third_party/asvspoof_baselines
+	url = https://github.com/asvspoof-challenge/2021.git
+[submodule "app/third_party/aasist"]
+	path = app/third_party/aasist
+	url = https://github.com/clovaai/aasist.git
