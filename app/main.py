@@ -6,7 +6,7 @@ from app.routes import enrollment, challenge, language, health, token, verificat
 from app.db import Base, engine
 # from app.models import Enrollment, VerificationLog
 
-from app.anti_spoofing import load_models
+# from app.anti_spoofing import load_models
 
 # Create tables if they don't exist
 Base.metadata.create_all(bind=engine)
@@ -14,13 +14,13 @@ Base.metadata.create_all(bind=engine)
 # --- FastAPI app ---
 app = FastAPI()
 
-@app.on_event("startup")
-async def startup_event():
-    load_models(
-        aasist_ckpt="app/models/anti_spoof/aasist.ckpt",
-        lcnn_ckpt="app/models/anti_spoof/lcnn.ckpt",
-        cqcc_gmm_ckpt="app/models/anti_spoof/cqcc_gmm.joblib",
-    )
+# @app.on_event("startup")
+# async def startup_event():
+#     load_models(
+#         aasist_ckpt="app/models/anti_spoof/aasist.ckpt",
+#         lcnn_ckpt="app/models/anti_spoof/lcnn.ckpt",
+#         cqcc_gmm_ckpt="app/models/anti_spoof/cqcc_gmm.joblib",
+#     )
 
 # Routers
 app.include_router(enrollment.router, prefix="/api", tags=["Enrollment"])

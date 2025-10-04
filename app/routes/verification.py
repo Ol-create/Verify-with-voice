@@ -18,13 +18,7 @@ from app.utils.audio import transcribe_audio, compute_embedding
 from app.utils.verification import cosine_similarity, fuzzy_match
 from app.utils.storage import upload_audio
 from app.auth import verify_token
-from app.anti_spoofing import (
-    aasist_score,
-    lcnn_score,
-    cqcc_gmm_score,
-    normalize_score,
-    fuse_scores,
-)
+from app.anti_spoofing.aasist import aasist_score  # ✅ new import
 
 router = APIRouter()
 
@@ -33,13 +27,11 @@ MAX_ENROLLMENTS = 5
 CHALLENGE_TTL = 30
 SPOOF_THRESHOLD = 0.5
 
-_DETECTOR_POOL = ThreadPoolExecutor(max_workers=3)
-
+_DETECTOR_POOL = ThreadPoolExecutor(max_workers=2)
 
 async def _run_detector_in_executor(fn, audio_path: str):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DETECTOR_POOL, fn, audio_path)
-
 
 @router.post("/secure-verify-voice")
 async def secure_verify(
@@ -79,7 +71,7 @@ async def secure_verify(
         matched, ratio = fuzzy_match(transcript, challenge.text, threshold=0.8)
 
         if not matched:
-            # ❌ failed liveness → log with null spoof scores
+            # ❌ failed liveness
             log = VerificationLog(
                 user_id=user_id,
                 phrase=transcript,
@@ -87,8 +79,6 @@ async def secure_verify(
                 liveness_verified=False,
                 identity_verified=False,
                 aasist_score=None,
-                lcnn_score=None,
-                cqcc_gmm_score=None,
                 spoof_prob=None,
             )
             db.add(log)
@@ -96,26 +86,10 @@ async def secure_verify(
             db.commit()
             raise HTTPException(status_code=401, detail=f"Challenge mismatch (similarity {ratio:.2f})")
 
-        # --- Step 2: Run spoof detectors concurrently ---
-        aasist_future = _run_detector_in_executor(aasist_score, audio_path)
-        lcnn_future = _run_detector_in_executor(lcnn_score, audio_path)
-        cqcc_future = _run_detector_in_executor(cqcc_gmm_score, audio_path)
-
-        aasist_raw, lcnn_raw, cqcc_raw = await asyncio.gather(
-            aasist_future, lcnn_future, cqcc_future
-        )
-
-        aasist_n = normalize_score(aasist_raw, 0.0, 1.0)
-        lcnn_n = normalize_score(lcnn_raw, 0.0, 1.0)
-        cqcc_n = normalize_score(cqcc_raw, 0.0, 1.0)
-
-        detector_scores = {
-            "aasist": float(aasist_n),
-            "lcnn": float(lcnn_n),
-            "cqcc_gmm": float(cqcc_n),
-        }
-
-        spoof_prob = float(fuse_scores(detector_scores))
+        # --- Step 2: Run AASIST spoof detector ---
+        aasist_raw = await _run_detector_in_executor(aasist_score, audio_path)
+        aasist_n = max(0.0, min(1.0, float(aasist_raw)))  # clamp to [0–1]
+        spoof_prob = aasist_n
 
         if spoof_prob > SPOOF_THRESHOLD:
             # ❌ spoof detected
@@ -126,8 +100,6 @@ async def secure_verify(
                 liveness_verified=True,
                 identity_verified=False,
                 aasist_score=aasist_n,
-                lcnn_score=lcnn_n,
-                cqcc_gmm_score=cqcc_n,
                 spoof_prob=spoof_prob,
             )
             db.add(log)
@@ -170,8 +142,6 @@ async def secure_verify(
             liveness_verified=True,
             identity_verified=verified,
             aasist_score=aasist_n,
-            lcnn_score=lcnn_n,
-            cqcc_gmm_score=cqcc_n,
             spoof_prob=spoof_prob,
         )
         db.add(log)
@@ -184,11 +154,11 @@ async def secure_verify(
             "transcript": transcript,
             "challenge_match": ratio,
             "audio_url": s3_uri,
-            "detector_scores": detector_scores,
+            "detector_scores": {"aasist": aasist_n},
             "spoof_prob": spoof_prob,
         }
 
-    except Exception as e:
+    except Exception:
         try:
             db.delete(challenge)
             db.commit()
