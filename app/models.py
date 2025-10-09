@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, LargeBinary, Float, ForeignKey, Boolean
+from sqlalchemy import Column, String, DateTime, LargeBinary, Float, ForeignKey, Boolean, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.db import Base
@@ -8,6 +8,7 @@ from app.db import Base
 
 class Challenge(Base):
     __tablename__ = "challenges"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -56,6 +57,10 @@ class Enrollment(Base):
     audio_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+    # 🆕 Add these fields here (not in User)
+    enroll_stage = Column(Integer, default=1)  # 1, 2, or 3
+    is_final = Column(Boolean, default=False)  # True only for averaged embedding
+
     user = relationship("User", back_populates="enrollments")
 
 
@@ -70,8 +75,7 @@ class VerificationLog(Base):
     identity_verified = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    
-    # ✅ New anti-spoof fields
+    # ✅ Anti-spoof fields
     aasist_score = Column(Float, nullable=True)
     lcnn_score = Column(Float, nullable=True)
     cqcc_gmm_score = Column(Float, nullable=True)

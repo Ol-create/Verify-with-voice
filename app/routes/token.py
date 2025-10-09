@@ -1,7 +1,6 @@
 from datetime import timedelta
 from sqlalchemy.orm import Session
-from fastapi import Depends, APIRouter, HTTPException, status
-from uuid import UUID
+from fastapi import Depends, APIRouter, HTTPException, status, Header
 
 from app.db import get_db
 from app.models import User, Company
@@ -12,29 +11,41 @@ from app.config import settings
 router = APIRouter()
 
 @router.post("/token", response_model=TokenResponse)
-async def generate_token(payload: TokenRequest, db: Session = Depends(get_db)):
+async def generate_token(
+    payload: TokenRequest,
+    db: Session = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-KEY"),
+    x_api_secret: str = Header(..., alias="X-API-SECRET"),
+):
     """
-    Generate JWT for a user under a specific company.
+    Issue a JWT for a user.
+    Requires company API key + secret in headers.
     """
-    if not payload.user_id or not payload.company_id:
+
+    # ✅ Step 1: Verify company using API key/secret
+    company = db.query(Company).filter(Company.api_key == x_api_key).first()
+    if not company or company.api_secret != x_api_secret:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API credentials",
+        )
+
+    # ✅ Step 2: Validate user payload
+    if not payload.user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="user_id and company_id are required",
+            detail="user_id is required",
         )
 
-    # Validate company
-    company = db.query(Company).filter(Company.id == payload.company_id).first()
-    if not company:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found",
+    # ✅ Step 3: Find or create user under this company
+    user = (
+        db.query(User)
+        .filter(
+            User.external_user_id == payload.user_id,
+            User.company_id == company.id,
         )
-
-    # Find or create user under this company
-    user = db.query(User).filter(
-        User.external_user_id == payload.user_id,
-        User.company_id == company.id
-    ).first()
+        .first()
+    )
 
     if not user:
         user = User(
@@ -46,14 +57,11 @@ async def generate_token(payload: TokenRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
     else:
-        # update language preference
         user.lang = payload.lang
         db.commit()
 
-    # Create token with UUIDs as strings
-    access_token_expires = timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    # ✅ Step 4: Create short-lived JWT
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "user_id": str(user.id),

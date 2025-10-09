@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from mangum import Mangum
 
-from app.routes import enrollment, challenge, language, health, token, verification
+from app.routes import enrollment, challenge, language, health, token, verification, company
 from app.db import Base, engine
 # from app.models import Enrollment, VerificationLog
 
@@ -29,6 +29,7 @@ app.include_router(health.router, prefix="/api", tags=["Health"])
 app.include_router(token.router, prefix="/api", tags=["Token"])
 app.include_router(verification.router, prefix="/api", tags=["Verification"])
 app.include_router(language.router, prefix="/api", tags=["Language"])
+app.include_router(company.router, prefix="/api", tags=["Company"])
 
 # ✅ Lambda entrypoint
 handler = Mangum(app)

@@ -48,3 +48,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     lang: str
+
+
+class CompanySignupRequest(BaseModel):
+    name: str

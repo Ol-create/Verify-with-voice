@@ -1,4 +1,4 @@
-# app/routes/verification.py
+# app/routes/verification.py (DEBUG VERSION)
 
 import os
 import shutil
@@ -14,18 +14,17 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Enrollment, VerificationLog, Challenge
-from app.utils.audio import transcribe_audio, compute_embedding
+from app.utils.audio import transcribe_audio, compute_embedding, convert_to_wav
 from app.utils.verification import cosine_similarity, fuzzy_match
 from app.utils.storage import upload_audio
 from app.auth import verify_token
-from app.anti_spoofing.aasist import aasist_score  # ✅ new import
+from app.anti_spoofing.aasist import aasist_score
 
 router = APIRouter()
 
 SIMILARITY_THRESHOLD = 0.75
-MAX_ENROLLMENTS = 5
-CHALLENGE_TTL = 30
-SPOOF_THRESHOLD = 0.5
+CHALLENGE_TTL = 120
+SPOOF_THRESHOLD = 0.99999
 
 _DETECTOR_POOL = ThreadPoolExecutor(max_workers=2)
 
@@ -39,131 +38,150 @@ async def secure_verify(
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_token),
 ):
+    print("\n[DEBUG] --- Starting secure_verify ---")
+
     user_id = token_data.get("user_id")
+    print(f"[DEBUG] user_id = {user_id}")
+
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    # ✅ Fetch latest challenge
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format (must be UUID).")
+
+    # Step 1
     challenge = (
         db.query(Challenge)
-        .filter(Challenge.user_id == user_id)
+        .filter(Challenge.user_id == user_uuid)
         .order_by(Challenge.created_at.desc())
         .first()
     )
+    print(f"[DEBUG] Challenge fetched = {challenge.text if challenge else None}")
+
     if not challenge:
         raise HTTPException(status_code=400, detail="No active challenge found")
 
-    # ✅ Enforce TTL
-    if (datetime.datetime.utcnow() - challenge.created_at).total_seconds() > CHALLENGE_TTL:
+    # Step 2
+    age = (datetime.datetime.utcnow() - challenge.created_at).total_seconds()
+    print(f"[DEBUG] Challenge age = {age:.2f}s")
+    if age > CHALLENGE_TTL:
         db.delete(challenge)
         db.commit()
         raise HTTPException(status_code=400, detail="Challenge expired")
 
     tmpdir = tempfile.mkdtemp()
+    print(f"[DEBUG] Created tmpdir: {tmpdir}")
     try:
-        # Save file locally
+        # Step 3
         audio_path = os.path.join(tmpdir, audio.filename)
         with open(audio_path, "wb") as f:
             shutil.copyfileobj(audio.file, f)
+        print(f"[DEBUG] Saved audio to {audio_path}")
 
-        # --- Step 1: Transcribe + liveness check ---
+        # Step 4
         transcript = await transcribe_audio(audio_path)
+        print(f"[DEBUG] Transcript: {transcript}")
         matched, ratio = fuzzy_match(transcript, challenge.text, threshold=0.8)
+        print(f"[DEBUG] Fuzzy match result: matched={matched}, ratio={ratio:.2f}")
 
         if not matched:
-            # ❌ failed liveness
-            log = VerificationLog(
-                user_id=user_id,
+            print("[DEBUG] Challenge mismatch → aborting.")
+            db.add(VerificationLog(
+                user_id=user_uuid,
                 phrase=transcript,
                 similarity=0.0,
                 liveness_verified=False,
                 identity_verified=False,
-                aasist_score=None,
-                spoof_prob=None,
-            )
-            db.add(log)
+            ))
             db.delete(challenge)
             db.commit()
-            raise HTTPException(status_code=401, detail=f"Challenge mismatch (similarity {ratio:.2f})")
+            raise HTTPException(status_code=401, detail=f"Challenge mismatch (similarity={ratio:.2f})")
 
-        # --- Step 2: Run AASIST spoof detector ---
-        aasist_raw = await _run_detector_in_executor(aasist_score, audio_path)
-        aasist_n = max(0.0, min(1.0, float(aasist_raw)))  # clamp to [0–1]
-        spoof_prob = aasist_n
+        # Step 5: Spoof detection
+        print("[DEBUG] Starting AASIST spoof detection...")
+        wav_path = convert_to_wav(audio_path)
+        aasist_raw = await _run_detector_in_executor(aasist_score, wav_path)
+        # aasist_raw = await _run_detector_in_executor(aasist_score, audio_path)
+        spoof_prob = float(np.clip(aasist_raw, 0.0, 1.0))
+        print(f"[DEBUG] AASIST raw: {aasist_raw}, normalized: {spoof_prob}")
 
         if spoof_prob > SPOOF_THRESHOLD:
-            # ❌ spoof detected
-            log = VerificationLog(
-                user_id=user_id,
+            print("[DEBUG] Spoof detected → aborting.")
+            db.add(VerificationLog(
+                user_id=user_uuid,
                 phrase=transcript,
                 similarity=0.0,
                 liveness_verified=True,
                 identity_verified=False,
-                aasist_score=aasist_n,
+                aasist_score=spoof_prob,
                 spoof_prob=spoof_prob,
-            )
-            db.add(log)
-            db.delete(challenge)
+            ))
+            db.query(Challenge).filter(Challenge.id == challenge.id).delete(synchronize_session=False)
             db.commit()
-            raise HTTPException(status_code=401, detail=f"Audio flagged as spoof (spoof_prob={spoof_prob:.3f})")
+            raise HTTPException(status_code=401, detail=f"Audio flagged as spoof (prob={spoof_prob:.3f})")
 
-        # --- Step 3: Embedding similarity check ---
-        new_embedding = compute_embedding(audio_path)
-        enrollments = (
+        # Step 6
+        print("[DEBUG] Loading enrollment embedding...")
+        enrollment = (
             db.query(Enrollment)
-            .filter(Enrollment.user_id == user_id)
-            .order_by(Enrollment.created_at.desc())
-            .limit(MAX_ENROLLMENTS)
-            .all()
+            .filter(Enrollment.user_id == user_uuid, Enrollment.is_final == True)
+            .first()
         )
-        if not enrollments:
-            db.delete(challenge)
+        if not enrollment:
+            print("[DEBUG] No enrollment found.")
+            db.query(Challenge).filter(Challenge.id == challenge.id).delete(synchronize_session=False)
             db.commit()
-            raise HTTPException(status_code=404, detail="No enrollment found")
+            raise HTTPException(status_code=404, detail="User not fully enrolled")
 
-        sims = [
-            cosine_similarity(new_embedding, np.frombuffer(e.embedding, dtype=np.float32))
-            for e in enrollments
-        ]
-        best_sim = float(max(sims))
-        verified = best_sim > SIMILARITY_THRESHOLD
+        enrolled_embedding = np.frombuffer(enrollment.embedding, dtype=np.float32)
+        new_embedding = compute_embedding(audio_path)
+        similarity = cosine_similarity(new_embedding, enrolled_embedding)
+        print(f"[DEBUG] Voice similarity: {similarity:.3f}")
 
-        # --- Step 4: Upload to S3 + log ---
+        verified = similarity > SIMILARITY_THRESHOLD
+        print(f"[DEBUG] Verified = {verified}")
+
         s3_uri = upload_audio(
             audio_path,
-            f"verifications/{user_id}/{uuid.uuid4()}-{audio.filename}",
-            audio.filename,
+            str(user_uuid),
+            f"verifications/{uuid.uuid4()}-{audio.filename}",
         )
 
         log = VerificationLog(
-            user_id=user_id,
+            user_id=user_uuid,
             phrase=transcript,
-            similarity=best_sim,
+            similarity=float(similarity),
             liveness_verified=True,
             identity_verified=verified,
-            aasist_score=aasist_n,
+            aasist_score=spoof_prob,
             spoof_prob=spoof_prob,
         )
         db.add(log)
-        db.delete(challenge)
+        db.query(Challenge).filter(Challenge.id == challenge.id).delete(synchronize_session=False)
         db.commit()
 
+        print("[DEBUG] Verification complete ✅")
         return {
             "verified": verified,
-            "similarity": best_sim,
+            "similarity": similarity,
             "transcript": transcript,
             "challenge_match": ratio,
             "audio_url": s3_uri,
-            "detector_scores": {"aasist": aasist_n},
+            "detector_scores": {"aasist": spoof_prob},
             "spoof_prob": spoof_prob,
         }
 
-    except Exception:
-        try:
-            db.delete(challenge)
-            db.commit()
-        except Exception:
-            pass
+    except HTTPException as e:
+        print(f"[DEBUG] HTTPException raised: {e.detail}")
         raise
+    except Exception as e:
+        print(f"[DEBUG] ERROR: {str(e)}")
+        db.rollback()
+        db.query(Challenge).filter(Challenge.id == challenge.id).delete(synchronize_session=False)
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        print("[DEBUG] Cleaned tmpdir")
