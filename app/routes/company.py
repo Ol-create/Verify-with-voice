@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Company
@@ -10,6 +10,14 @@ router = APIRouter()
 
 @router.post("/companies/signup")
 async def company_signup(payload: CompanySignupRequest, db: Session = Depends(get_db)):
+    # Check if company already exists
+    existing_company = db.query(Company).filter(Company.name == payload.name).first()
+    if existing_company:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Company '{payload.name}' already exists."
+        )
+
     # Generate API key/secret
     api_key = secrets.token_hex(16)
     api_secret = secrets.token_hex(32)
@@ -20,6 +28,7 @@ async def company_signup(payload: CompanySignupRequest, db: Session = Depends(ge
         api_key=api_key,
         api_secret=api_secret,
     )
+
     db.add(company)
     db.commit()
     db.refresh(company)

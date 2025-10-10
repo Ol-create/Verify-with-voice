@@ -7,6 +7,7 @@ import soundfile as sf
 import noisereduce as nr
 import librosa
 import torchaudio
+from pathlib import Path
 from pydub import AudioSegment
 # from speechbrain.inference import EncoderClassifier
 from speechbrain.inference import EncoderClassifier
@@ -20,17 +21,23 @@ from fastapi import HTTPException
 #     run_opts={"local_files_only": False},
 # )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "pretrained_models", "ecapa"))
+
+
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["NO_GCE_CHECK"] = "true"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+
+MODEL_DIR = Path("app/pretrained_models/ecapa")
 
 speaker_model = EncoderClassifier.from_hparams(
-    source=MODEL_DIR,
-    savedir=MODEL_DIR,
-    run_opts={"local_files_only": True},
+    source=str(MODEL_DIR),
+    savedir=str(MODEL_DIR),
+    run_opts={"local_files_only": True, "device": "cpu"},
+    use_auth_token=False
 )
 
-print("✅ ECAPA model loaded locally from:", MODEL_DIR)
-
+print("✅ ECAPA model loaded 100% locally from:", MODEL_DIR)
 # OpenAI client
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 client = OpenAI(api_key=OPENAI_API_KEY)

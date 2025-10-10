@@ -1,8 +1,10 @@
-venv310/
 __pycache__/
-.git
 *.pyc
 *.pyo
 *.pyd
-.Python
+*.log
 *.db
+.git/
+.vscode/
+*.m4a
+test_audio.wav
