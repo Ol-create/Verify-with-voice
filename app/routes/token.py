@@ -48,17 +48,20 @@ async def generate_token(
     )
 
     if not user:
+        # 🆕 Save language only on first token creation
         user = User(
             company_id=company.id,
             external_user_id=payload.user_id,
-            lang=payload.lang,
+            lang=payload.lang or "en",  # default to English if not provided
         )
         db.add(user)
         db.commit()
         db.refresh(user)
     else:
-        user.lang = payload.lang
-        db.commit()
+        # 🆕 Don't overwrite existing language (preserve original choice)
+        if not user.lang and payload.lang:
+            user.lang = payload.lang
+            db.commit()
 
     # ✅ Step 4: Create short-lived JWT
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)

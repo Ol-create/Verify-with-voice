@@ -40,7 +40,7 @@ class TokenData(BaseModel):
 class TokenRequest(BaseModel):
     user_id: str       # external user_id from company’s system
     company_id: UUID   # the company’s UUID
-    lang: str = "en"
+    lang: str | None = "en"
 
 
 # ✅ Response after token generation

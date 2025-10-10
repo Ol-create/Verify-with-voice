@@ -11,8 +11,8 @@ from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Enrollment, Challenge
-from app.utils.audio import compute_embedding, transcribe_audio
+from app.models import Enrollment, Challenge, User
+from app.utils.audio import compute_embedding, transcribe_audio, convert_to_wav
 from app.utils.verification import fuzzy_match
 from app.utils.storage import upload_audio
 from app.auth import verify_token
@@ -90,27 +90,35 @@ async def enroll_voice(
                 tmpfile.seek(0)
                 shutil.copyfileobj(tmpfile, f)
 
-            # ✅ Step 1: Transcribe audio
-            transcript = await transcribe_audio(audio_path)
+            # ✅ Step 1: Retrieve user language from DB
+            user = db.query(User).filter(User.id == user_uuid).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # ✅ Step 2: Transcribe audio in user's preferred language
+            wav_path = convert_to_wav(audio_path)
+            transcript = await transcribe_audio(wav_path, language=user.lang or "auto")
+
+
             if not transcript.strip():
                 db.delete(challenge)
                 db.commit()
                 raise HTTPException(status_code=400, detail="Could not transcribe audio. Try again.")
 
-            # ✅ Step 2: Match spoken challenge (must match current challenge)
-            match, ratio = fuzzy_match(transcript, challenge.text, threshold=0.8)
+            # ✅ Step 3: Match spoken challenge (must match current challenge)
+            match, ratio = fuzzy_match(transcript, challenge.text, threshold=0.7)
             if not match:
                 db.delete(challenge)
                 db.commit()
                 raise HTTPException(status_code=401, detail=f"Challenge mismatch (similarity={ratio:.2f}).")
 
-            # ✅ Step 3: Upload audio to S3
+            # ✅ Step 4: Upload audio to S3
             s3_uri = upload_audio(audio_path, str(user_uuid), audio.filename)
 
-            # ✅ Step 4: Compute embedding
+            # ✅ Step 5: Compute embedding
             embedding = compute_embedding(audio_path)
 
-            # ✅ Step 5: Save as a temporary enrollment (not final yet)
+            # ✅ Step 6: Save as a temporary enrollment (not final yet)
             enrollment = Enrollment(
                 user_id=user_uuid,
                 embedding=embedding.astype(np.float32).tobytes(),
@@ -121,7 +129,7 @@ async def enroll_voice(
             db.add(enrollment)
             db.commit()
 
-            # ✅ Step 6: Count how many enrollments exist for user
+            # ✅ Step 7: Count how many enrollments exist for user
             user_enrolls = (
                 db.query(Enrollment)
                 .filter(Enrollment.user_id == user_uuid, Enrollment.is_final == False)
@@ -139,12 +147,12 @@ async def enroll_voice(
                     "audio_url": s3_uri,
                 }
 
-            # ✅ Step 7: Average embeddings if all 3 samples done
+            # ✅ Step 8: Average embeddings if all 3 samples done
             embeddings = [np.frombuffer(e.embedding, dtype=np.float32) for e in user_enrolls]
             avg_embedding = np.mean(np.stack(embeddings), axis=0)
             avg_bytes = avg_embedding.astype(np.float32).tobytes()
 
-            # ✅ Step 8: Delete temp enrollments and create final record
+            # ✅ Step 9: Delete temp enrollments and create final record
             for e in user_enrolls:
                 db.delete(e)
             db.commit()
@@ -158,7 +166,7 @@ async def enroll_voice(
             )
             db.add(final_enrollment)
 
-            # ✅ Invalidate challenge after success
+            # ✅ Step 10: Invalidate challenge after success
             db.delete(challenge)
             db.commit()
 

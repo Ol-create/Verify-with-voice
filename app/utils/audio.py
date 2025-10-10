@@ -8,18 +8,28 @@ import noisereduce as nr
 import librosa
 import torchaudio
 from pydub import AudioSegment
+# from speechbrain.inference import EncoderClassifier
 from speechbrain.inference import EncoderClassifier
 from openai import OpenAI
 from fastapi import HTTPException
 
 # Load ECAPA model once
+# speaker_model = EncoderClassifier.from_hparams(
+#     source="speechbrain/spkrec-ecapa-voxceleb",
+#     savedir="pretrained_models/ecapa",
+#     run_opts={"local_files_only": False},
+# )
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "pretrained_models", "ecapa"))
+
 speaker_model = EncoderClassifier.from_hparams(
-    source="speechbrain/spkrec-ecapa-voxceleb",
-    savedir="pretrained_models/ecapa",
-    run_opts={"local_files_only": False},
+    source=MODEL_DIR,
+    savedir=MODEL_DIR,
+    run_opts={"local_files_only": True},
 )
 
-print("✅ ECAPA model loaded")
+print("✅ ECAPA model loaded locally from:", MODEL_DIR)
 
 # OpenAI client
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -37,18 +47,29 @@ def convert_to_wav(input_path: str) -> str:
     return tmp_wav
 
 
-async def transcribe_audio(audio_path: str) -> str:
-    """Use OpenAI Whisper API to transcribe audio."""
+async def transcribe_audio(audio_path: str, language: str = "auto") -> str:
+    """
+    Use OpenAI Whisper API to transcribe audio in a specified language.
+
+    Args:
+        audio_path: Path to the audio file.
+        language: ISO 639-1 code (e.g., "en", "fr", "yo", "ha").
+                  Use "auto" to let Whisper detect automatically.
+    """
     try:
         with open(audio_path, "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                language="en",
-            )
+            # Automatically detect language if "auto" is passed
+            kwargs = {"model": "whisper-1", "file": f}
+            if language and language != "auto":
+                kwargs["language"] = language
+
+            transcript = client.audio.transcriptions.create(**kwargs)
+
         return transcript.text.strip()
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Whisper transcription failed: {str(e)}")
+
 
 
 def compute_embedding(audio_path: str) -> np.ndarray:
