@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import torchaudio
 # from app.utils.audio import denoise_audio
-from app.utils.embedding import speaker_model
+from app.utils.audio import speaker_model
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-your-key")

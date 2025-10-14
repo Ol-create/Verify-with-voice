@@ -9,6 +9,7 @@ import librosa
 import torchaudio
 from pathlib import Path
 from pydub import AudioSegment
+from functools import lru_cache
 # from speechbrain.inference import EncoderClassifier
 from speechbrain.inference import EncoderClassifier
 from openai import OpenAI
@@ -23,19 +24,35 @@ from fastapi import HTTPException
 
 
 
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["NO_GCE_CHECK"] = "true"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+# os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# os.environ["HF_HUB_OFFLINE"] = "1"
+# os.environ["NO_GCE_CHECK"] = "true"
+# os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 MODEL_DIR = Path("app/pretrained_models/ecapa")
 
 speaker_model = EncoderClassifier.from_hparams(
-    source=str(MODEL_DIR),
+    source="speechbrain/spkrec-ecapa-voxceleb",
     savedir=str(MODEL_DIR),
-    run_opts={"local_files_only": True, "device": "cpu"},
-    use_auth_token=False
+    run_opts={"device": "cpu"},
+    # run_opts={"local_files_only": True, "device": "cpu"},
+    # use_auth_token=False
 )
+
+
+
+# @lru_cache(maxsize=1)
+# def speaker_model():
+#     """Lazily load the SpeechBrain model when needed."""
+#     from speechbrain.inference import EncoderClassifier
+#     MODEL_DIR = Path("app/pretrained_models/ecapa")
+#     print("🔁 Loading SpeechBrain ECAPA model...")
+#     return EncoderClassifier.from_hparams(
+#         source=str(MODEL_DIR),
+#         savedir=str(MODEL_DIR),
+#         run_opts={"local_files_only": True, "device": "cpu"},
+#         use_auth_token=False
+#     )
 
 print("✅ ECAPA model loaded 100% locally from:", MODEL_DIR)
 # OpenAI client

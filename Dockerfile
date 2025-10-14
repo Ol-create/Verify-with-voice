@@ -71,26 +71,57 @@
 # CMD ["/opt/venv/Scripts/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
-# ====== 1. Use a base Python image ======
+# # ====== 1. Use a base Python image ======
+# FROM python:3.10-slim
+
+# # ====== 2. Set working directory inside the container ======
+# WORKDIR /app
+
+# # ====== 3. Copy all project files into the container ======
+# COPY . /app
+
+# # ====== 4. Install system and Python dependencies ======
+# RUN apt-get update && apt-get install -y build-essential ffmpeg \
+#     && pip install --no-cache-dir --upgrade pip setuptools wheel \
+#     && pip install --no-cache-dir -r requirements.txt
+
+# # ====== 5. Copy environment variables file (optional) ======
+# COPY .env .env
+
+# # ====== 6. Expose the FastAPI port ======
+# EXPOSE 8000
+
+# # ====== 7. Run Alembic migrations, then start FastAPI ======
+# # This assumes `alembic.ini` is in the root folder
+# CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+
 FROM python:3.10-slim
 
-# ====== 2. Set working directory inside the container ======
 WORKDIR /app
 
-# ====== 3. Copy all project files into the container ======
+# Install dependencies
+COPY requirements.txt .
+RUN apt-get update && apt-get install -y build-essential ffmpeg libsndfile1 && \
+    pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Pre-download ECAPA model
+# RUN mkdir -p /app/app/pretrained_models/ecapa && \
+#     python -c "from speechbrain.inference import EncoderClassifier; \
+#     EncoderClassifier.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb', \
+#     savedir='/app/app/pretrained_models/ecapa', \
+#     run_opts={'device':'cpu'})"
+
 COPY . /app
 
-# ====== 4. Install system and Python dependencies ======
-RUN apt-get update && apt-get install -y build-essential ffmpeg \
-    && pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir -r requirements.txt
+# Offline settings
+ENV TRANSFORMERS_OFFLINE=0 \
+    HF_HUB_OFFLINE=0 \
+    HF_DATASETS_OFFLINE=0 \
+    NO_GCE_CHECK=false
 
-# ====== 5. Copy environment variables file (optional) ======
-COPY .env .env
-
-# ====== 6. Expose the FastAPI port ======
 EXPOSE 8000
 
-# ====== 7. Run Alembic migrations, then start FastAPI ======
-# This assumes `alembic.ini` is in the root folder
-CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Run FastAPI app only (no Alembic here)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
