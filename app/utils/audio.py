@@ -54,7 +54,7 @@ speaker_model = EncoderClassifier.from_hparams(
 #         use_auth_token=False
 #     )
 
-print("✅ ECAPA model loaded 100% locally from:", MODEL_DIR)
+print("✅ ECAPA model loaded 100% online to:", MODEL_DIR)
 # OpenAI client
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 client = OpenAI(api_key=OPENAI_API_KEY)
