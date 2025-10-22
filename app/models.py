@@ -250,7 +250,9 @@ class User(Base):
     enrollments = relationship("Enrollment", back_populates="user")
     logs = relationship("VerificationLog", back_populates="user")
     challenges = relationship("Challenge", back_populates="user")
-    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    # refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    refresh_token = Column(String, nullable=True)
+    refresh_token_expiry = Column(DateTime, nullable=True)
 
 
 class Enrollment(Base):
@@ -289,15 +291,15 @@ class VerificationLog(Base):
     user = relationship("User", back_populates="logs")
 
 
-# 🆕 RefreshToken model
-class RefreshToken(Base):
-    __tablename__ = "refresh_tokens"
+# # 🆕 RefreshToken model
+# class RefreshToken(Base):
+#     __tablename__ = "refresh_tokens"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    token = Column(String, nullable=False, unique=True, index=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    expires_at = Column(DateTime, nullable=False)
-    revoked = Column(Boolean, default=False)
+#     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+#     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+#     token = Column(String, nullable=False, unique=True, index=True)
+#     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+#     expires_at = Column(DateTime, nullable=False)
+#     revoked = Column(Boolean, default=False)
 
-    user = relationship("User", back_populates="refresh_tokens")
+#     user = relationship("User", back_populates="refresh_tokens")

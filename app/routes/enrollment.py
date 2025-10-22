@@ -195,8 +195,11 @@ import datetime
 import uuid
 import logging
 import numpy as np
-from fastapi import APIRouter, UploadFile, Form, Depends, HTTPException, status
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import APIRouter, UploadFile, Depends, HTTPException
 from sqlalchemy.orm import Session
+from fastapi.responses import JSONResponse
 
 from app.db import get_db
 from app.models import Enrollment, Challenge, User
@@ -204,18 +207,27 @@ from app.utils.audio import compute_embedding, transcribe_audio, convert_to_wav
 from app.utils.verification import fuzzy_match
 from app.utils.storage import upload_audio
 from app.auth import verify_token
+from app.anti_spoofing.aasist import aasist_score
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 CHALLENGE_TTL = 120  # seconds
-REQUIRED_SAMPLES = 3  # 3 enrollments before averaging
+REQUIRED_SAMPLES = 3
+SPOOF_THRESHOLD = 0.1999  # Higher = stricter anti-spoof filter
+
+_DETECTOR_POOL = ThreadPoolExecutor(max_workers=2)
+
+
+async def _run_detector_in_executor(fn, audio_path: str):
+    """Run heavy inference (like AASIST) in a thread pool."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_DETECTOR_POOL, fn, audio_path)
 
 
 @router.post("/enroll-voice")
 async def enroll_voice(
-    # FIX: Change 'audio: UploadFile = Form(...)' to 'audio: UploadFile'
     audio: UploadFile,
     token_data: dict = Depends(verify_token),
     db: Session = Depends(get_db),
@@ -225,26 +237,20 @@ async def enroll_voice(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    # ✅ Convert user_id to UUID
+    # Validate UUID format
     try:
         user_uuid = uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id format (must be UUID).")
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
 
-    # ✅ Validate audio input
     if not audio or not audio.content_type.startswith("audio/"):
-        raise HTTPException(status_code=400, detail="Invalid or missing audio file.")
+        raise HTTPException(status_code=400, detail="Invalid or missing audio file")
 
-    # ✅ Check if user already fully enrolled
-    existing_final = (
-        db.query(Enrollment)
-        .filter(Enrollment.user_id == user_uuid, Enrollment.is_final == True)
-        .first()
-    )
-    if existing_final:
-        raise HTTPException(status_code=400, detail="User already fully enrolled.")
+    # Prevent re-enrollment if user already finalized
+    if db.query(Enrollment).filter(Enrollment.user_id == user_uuid, Enrollment.is_final == True).first():
+        raise HTTPException(status_code=400, detail="User already fully enrolled")
 
-    # ✅ Get latest challenge
+    # Get latest challenge
     challenge = (
         db.query(Challenge)
         .filter(Challenge.user_id == user_uuid)
@@ -254,20 +260,18 @@ async def enroll_voice(
     if not challenge:
         raise HTTPException(status_code=400, detail="No active challenge found")
 
-    # ✅ Check expiration
-    age = (datetime.datetime.utcnow() - challenge.created_at).total_seconds()
-    if age > CHALLENGE_TTL:
+    # Check if challenge expired
+    if (datetime.datetime.utcnow() - challenge.created_at).total_seconds() > CHALLENGE_TTL:
         db.delete(challenge)
         db.commit()
         raise HTTPException(status_code=400, detail="Challenge expired")
 
-    # ✅ Save uploaded audio temporarily
     with tempfile.SpooledTemporaryFile(max_size=MAX_FILE_SIZE) as tmpfile:
         size = 0
-        for chunk in iter(lambda: audio.file.read(1024 * 1024), b""):  # 1 MB chunks
+        for chunk in iter(lambda: audio.file.read(1024 * 1024), b""):
             size += len(chunk)
             if size > MAX_FILE_SIZE:
-                raise HTTPException(status_code=413, detail="Audio file is too large (max 10MB).")
+                raise HTTPException(status_code=413, detail="Audio file is too large (max 10MB)")
             tmpfile.write(chunk)
 
         tmpfile.seek(0)
@@ -279,37 +283,46 @@ async def enroll_voice(
                 tmpfile.seek(0)
                 shutil.copyfileobj(tmpfile, f)
 
-            # ✅ Step 1: Retrieve user language from DB
             user = db.query(User).filter(User.id == user_uuid).first()
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
-            # ✅ Step 2: Transcribe audio in user's preferred language
+            # Transcribe the user's speech
             wav_path = convert_to_wav(audio_path)
             transcript = await transcribe_audio(wav_path, language=user.lang or "auto")
-
             if not transcript.strip():
                 db.delete(challenge)
                 db.commit()
-                raise HTTPException(status_code=400, detail="Could not transcribe audio. Try again.")
+                raise HTTPException(status_code=400, detail="Could not transcribe audio")
 
-            # ✅ Step 3: Match spoken challenge (must match current challenge)
+            # Verify that the spoken phrase matches the challenge
             match, ratio = fuzzy_match(transcript, challenge.text, threshold=0.7)
             if not match:
                 db.delete(challenge)
                 db.commit()
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Challenge mismatch (similarity={ratio:.2f}). Please read the text exactly as shown."
+                raise HTTPException(detail="Phrase mismatch! Say the phrase exactly")
+
+            # === ✅ Anti-Spoofing Check ===
+            aasist_raw = await _run_detector_in_executor(aasist_score, wav_path)
+            spoof_prob = float(np.clip(aasist_raw, 0.0, 1.0))
+            logger.info(f"AASIST spoof probability: {spoof_prob:.6f}")
+
+            if spoof_prob > SPOOF_THRESHOLD:
+                db.delete(challenge)
+                db.commit()
+                # raise HTTPException(
+                #     status_code=400,
+                #     detail=f"We detected an artificial voice! Try again using your real voice."
+                # )
+                return JSONResponse(
+                  status_code=400,
+                  content={"detail": "We detected an artificial voice! Try again using your real voice."}
                 )
 
-            # ✅ Step 4: Upload audio to S3
+            # === ✅ Proceed only if anti-spoof passed ===
             s3_uri = upload_audio(audio_path, str(user_uuid), audio.filename)
-
-            # ✅ Step 5: Compute embedding
             embedding = compute_embedding(audio_path)
 
-            # ✅ Step 6: Save as a temporary enrollment (not final yet)
             enrollment = Enrollment(
                 user_id=user_uuid,
                 embedding=embedding.astype(np.float32).tobytes(),
@@ -320,7 +333,6 @@ async def enroll_voice(
             db.add(enrollment)
             db.commit()
 
-            # ✅ Step 7: Count how many enrollments exist for user
             user_enrolls = (
                 db.query(Enrollment)
                 .filter(Enrollment.user_id == user_uuid, Enrollment.is_final == False)
@@ -336,28 +348,25 @@ async def enroll_voice(
                     "transcript": transcript.strip(),
                     "similarity": ratio,
                     "audio_url": s3_uri,
+                    "spoof_prob": spoof_prob,
                 }
 
-            # ✅ Step 8: Average embeddings if all 3 samples done
+            # Average embeddings for final voiceprint
             embeddings = [np.frombuffer(e.embedding, dtype=np.float32) for e in user_enrolls]
             avg_embedding = np.mean(np.stack(embeddings), axis=0)
-            avg_bytes = avg_embedding.astype(np.float32).tobytes()
 
-            # ✅ Step 9: Delete temp enrollments and create final record
             for e in user_enrolls:
                 db.delete(e)
             db.commit()
 
             final_enrollment = Enrollment(
                 user_id=user_uuid,
-                embedding=avg_bytes,
+                embedding=avg_embedding.astype(np.float32).tobytes(),
                 audio_url=s3_uri,
                 created_at=datetime.datetime.utcnow(),
                 is_final=True,
             )
             db.add(final_enrollment)
-
-            # ✅ Step 10: Invalidate challenge after success
             db.delete(challenge)
             db.commit()
 
@@ -367,13 +376,13 @@ async def enroll_voice(
                 "transcript": transcript.strip(),
                 "average_samples": REQUIRED_SAMPLES,
                 "audio_url": s3_uri,
+                "spoof_prob": spoof_prob,
             }
 
         except Exception as e:
-            logger.exception("Enrollment failed: %s", str(e))
-            db.delete(challenge)
-            db.commit()
-            raise HTTPException(status_code=500, detail="Internal server error during enrollment.")
+            logger.exception("Enrollment failed: %s", e)
+            db.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)

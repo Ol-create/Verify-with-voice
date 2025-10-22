@@ -42,10 +42,14 @@ class TokenRequest(BaseModel):
     company_id: UUID   # the company’s UUID
     lang: str | None = "en"
 
+# ✅ Used for token refresh endpoint
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 # ✅ Response after token generation
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     lang: str
 
