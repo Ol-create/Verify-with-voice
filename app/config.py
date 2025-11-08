@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     SECRET_KEY: str = "fbfabfec4de24aca3cfa63855ca0038ca4e238d03d7aad9f2bd9196c707b9984"  # change this to a strong random key
     ALGORITHM: str = "HS256"
+    FERNET_KEY: str = "ORkXLF5tZlUH-owwdK0SbjVEt5HOQGdVLT8aRCtjG64="
 
     @property
     def DATABASE_URL(self):

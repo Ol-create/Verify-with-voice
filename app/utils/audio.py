@@ -29,7 +29,7 @@ from fastapi import HTTPException
 # os.environ["NO_GCE_CHECK"] = "true"
 # os.environ["HF_DATASETS_OFFLINE"] = "1"
 
-MODEL_DIR = Path("app/pretrained_models/ecapa")
+MODEL_DIR = Path("pretrained_models/ecapa")
 
 speaker_model = EncoderClassifier.from_hparams(
     source="speechbrain/spkrec-ecapa-voxceleb",
@@ -71,28 +71,49 @@ def convert_to_wav(input_path: str) -> str:
     return tmp_wav
 
 
+# async def transcribe_audio(audio_path: str, language: str = "auto") -> str:
+#     """
+#     Use OpenAI Whisper API to transcribe audio in a specified language.
+
+#     Args:
+#         audio_path: Path to the audio file.
+#         language: ISO 639-1 code (e.g., "en", "fr", "yo", "ha").
+#                   Use "auto" to let Whisper detect automatically.
+#     """
+#     try:
+#         with open(audio_path, "rb") as f:
+#             # Automatically detect language if "auto" is passed
+#             kwargs = {"model": "whisper-1", "file": f}
+#             if language and language != "auto":
+#                 kwargs["language"] = language
+
+#             transcript = client.audio.transcriptions.create(**kwargs)
+
+#         return transcript.text.strip()
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Whisper transcription failed: {str(e)}")
+
 async def transcribe_audio(audio_path: str, language: str = "auto") -> str:
     """
     Use OpenAI Whisper API to transcribe audio in a specified language.
-
-    Args:
-        audio_path: Path to the audio file.
-        language: ISO 639-1 code (e.g., "en", "fr", "yo", "ha").
-                  Use "auto" to let Whisper detect automatically.
     """
     try:
         with open(audio_path, "rb") as f:
-            # Automatically detect language if "auto" is passed
-            kwargs = {"model": "whisper-1", "file": f}
-            if language and language != "auto":
-                kwargs["language"] = language
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=("audio.wav", f, "audio/wav"),
+                language=None if language == "auto" else language,
+                response_format="text",
+            )
 
-            transcript = client.audio.transcriptions.create(**kwargs)
-
-        return transcript.text.strip()
+        # Some SDK versions return `str`, others return `Transcription` object
+        text = transcript if isinstance(transcript, str) else getattr(transcript, "text", "")
+        return text.strip()
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Whisper transcription failed: {str(e)}")
+
 
 
 

@@ -44,6 +44,6 @@
 
 from app.anti_spoofing.aasist import aasist_score
 
-score = aasist_score("test_audio.wav")
+score = aasist_score("compsample2.wav")
 print("Spoof probability:", score)
 
