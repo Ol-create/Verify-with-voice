@@ -96,32 +96,49 @@
 # CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 
-FROM python:3.10-slim
+# FROM python:3.10-slim
+
+# WORKDIR /app
+
+# # Install dependencies
+# COPY requirements.txt .
+# RUN apt-get update && apt-get install -y build-essential ffmpeg libsndfile1 && \
+#     pip install --no-cache-dir --upgrade pip setuptools wheel && \
+#     pip install --no-cache-dir -r requirements.txt
+
+
+# COPY . /app
+
+
+# EXPOSE 8000
+
+# # Run FastAPI app only (no Alembic here)
+# CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
-RUN apt-get update && apt-get install -y build-essential ffmpeg libsndfile1 && \
-    pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ffmpeg \
+        libsndfile1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Pre-download ECAPA model
-# RUN mkdir -p /app/app/pretrained_models/ecapa && \
-#     python -c "from speechbrain.inference import EncoderClassifier; \
-#     EncoderClassifier.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb', \
-#     savedir='/app/app/pretrained_models/ecapa', \
-#     run_opts={'device':'cpu'})"
+# Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
-# Offline settings
-ENV TRANSFORMERS_OFFLINE=0 \
-    HF_HUB_OFFLINE=0 \
-    HF_DATASETS_OFFLINE=0 \
-    NO_GCE_CHECK=false
-
 EXPOSE 8000
 
-# Run FastAPI app only (no Alembic here)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

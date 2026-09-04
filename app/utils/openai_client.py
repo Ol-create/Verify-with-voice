@@ -12,7 +12,7 @@ async def generate_challenge_sentence(lang: str) -> str:
     prompt = (
         "Generate a random sequence of 5 numbers written in words. "
         f"in the given {lang}. "
-        "The numbers should range from zero to twenty, separated by spaces. "
+        "The numbers should range from 0 to 20, separated by spaces. "
         "Do not add punctuation or extra text."
     )
 

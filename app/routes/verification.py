@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Enrollment, VerificationLog, Challenge, User
 from app.utils.normalize_transcription import normalize_numbers_to_words
+from app.utils.openai_client import convert_digits_to_words
 from app.utils.audio import transcribe_audio, compute_embedding, convert_to_wav
 from app.utils.verification import cosine_similarity, fuzzy_match
 from app.utils.storage import upload_audio
@@ -23,9 +24,9 @@ router = APIRouter()
 
 SIMILARITY_THRESHOLD = 0.65
 CHALLENGE_TTL = 120
-SPOOF_THRESHOLD = 0.20
+SPOOF_THRESHOLD = 0.30
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-MATCH_THRESHOLD = 0.2  # Similarity threshold for challenge verification
+MATCH_THRESHOLD = 0.20  # Similarity threshold for challenge verification
 
 _DETECTOR_POOL = ThreadPoolExecutor(max_workers=2)
 
@@ -109,7 +110,8 @@ async def secure_verify(
             transcript = await transcribe_audio(audio_path, language=user.lang or "auto")
             print(f"[DEBUG] Transcript result: {transcript}")
 
-            transcript = normalize_numbers_to_words(transcript)
+            # transcript = normalize_numbers_to_words(transcript)
+            transcript = await convert_digits_to_words(transcript, user.lang)
             print(f"Challenge spoken: {transcript}")
 
             # ✅ Step 6: Phrase verification

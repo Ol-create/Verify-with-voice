@@ -36,7 +36,7 @@ if not logger.handlers:
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 CHALLENGE_TTL = 120  # seconds
 REQUIRED_SAMPLES = 3
-SPOOF_THRESHOLD = 0.1999  # Higher = stricter anti-spoof filter
+SPOOF_THRESHOLD = 0.30  # Higher = stricter anti-spoof filter
 _DETECTOR_POOL = ThreadPoolExecutor(max_workers=2)
 MATCH_THRESHOLD = 0.2  # Similarity threshold for challenge verification
 
@@ -152,8 +152,8 @@ async def enroll_voice(
                 db.commit()
                 raise HTTPException(status_code=400, detail="Could not transcribe audio")
 
-            transcript = normalize_numbers_to_words(transcript)
-            # transcript = await convert_digits_to_words(transcript, user.lang)
+            # transcript = normalize_numbers_to_words(transcript)
+            transcript = await convert_digits_to_words(transcript, user.lang)
             
             # Step 2: Challenge verification
             match, ratio = fuzzy_match(transcript, challenge.text, threshold=MATCH_THRESHOLD)
