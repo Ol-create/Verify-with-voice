@@ -1,5 +1,6 @@
 # app/utils/audio.py
 
+import logging
 import os
 import tempfile
 import numpy as np
@@ -9,25 +10,11 @@ import librosa
 import torchaudio
 from pathlib import Path
 from pydub import AudioSegment
-from functools import lru_cache
-# from speechbrain.inference import EncoderClassifier
 from speechbrain.inference import EncoderClassifier
 from openai import OpenAI
 from fastapi import HTTPException
 
-# Load ECAPA model once
-# speaker_model = EncoderClassifier.from_hparams(
-#     source="speechbrain/spkrec-ecapa-voxceleb",
-#     savedir="pretrained_models/ecapa",
-#     run_opts={"local_files_only": False},
-# )
-
-
-
-# os.environ["TRANSFORMERS_OFFLINE"] = "1"
-# os.environ["HF_HUB_OFFLINE"] = "1"
-# os.environ["NO_GCE_CHECK"] = "true"
-# os.environ["HF_DATASETS_OFFLINE"] = "1"
+logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path("pretrained_models/ecapa")
 
@@ -35,26 +22,9 @@ speaker_model = EncoderClassifier.from_hparams(
     source="speechbrain/spkrec-ecapa-voxceleb",
     savedir=str(MODEL_DIR),
     run_opts={"device": "cpu"},
-    # run_opts={"local_files_only": True, "device": "cpu"},
-    # use_auth_token=False
 )
+logger.info("ECAPA speaker model loaded from %s", MODEL_DIR)
 
-
-
-# @lru_cache(maxsize=1)
-# def speaker_model():
-#     """Lazily load the SpeechBrain model when needed."""
-#     from speechbrain.inference import EncoderClassifier
-#     MODEL_DIR = Path("app/pretrained_models/ecapa")
-#     print("🔁 Loading SpeechBrain ECAPA model...")
-#     return EncoderClassifier.from_hparams(
-#         source=str(MODEL_DIR),
-#         savedir=str(MODEL_DIR),
-#         run_opts={"local_files_only": True, "device": "cpu"},
-#         use_auth_token=False
-#     )
-
-print("✅ ECAPA model loaded 100% online to:", MODEL_DIR)
 # OpenAI client
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -65,34 +35,13 @@ def convert_to_wav(input_path: str) -> str:
     Convert input audio (e.g., .m4a, .mp3) to a temporary .wav file.
     Returns path to the converted file.
     """
-    tmp_wav = tempfile.mktemp(suffix=".wav")
+    # Written next to the input, so the caller's temp dir clean-up removes it too
+    fd, tmp_wav = tempfile.mkstemp(suffix=".wav", dir=os.path.dirname(os.path.abspath(input_path)))
+    os.close(fd)
     audio = AudioSegment.from_file(input_path)
     audio.export(tmp_wav, format="wav")
     return tmp_wav
 
-
-# async def transcribe_audio(audio_path: str, language: str = "auto") -> str:
-#     """
-#     Use OpenAI Whisper API to transcribe audio in a specified language.
-
-#     Args:
-#         audio_path: Path to the audio file.
-#         language: ISO 639-1 code (e.g., "en", "fr", "yo", "ha").
-#                   Use "auto" to let Whisper detect automatically.
-#     """
-#     try:
-#         with open(audio_path, "rb") as f:
-#             # Automatically detect language if "auto" is passed
-#             kwargs = {"model": "whisper-1", "file": f}
-#             if language and language != "auto":
-#                 kwargs["language"] = language
-
-#             transcript = client.audio.transcriptions.create(**kwargs)
-
-#         return transcript.text.strip()
-
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Whisper transcription failed: {str(e)}")
 
 async def transcribe_audio(audio_path: str, language: str = "auto") -> str:
     """
@@ -113,8 +62,6 @@ async def transcribe_audio(audio_path: str, language: str = "auto") -> str:
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Whisper transcription failed: {str(e)}")
-
-
 
 
 def compute_embedding(audio_path: str) -> np.ndarray:

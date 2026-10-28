@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import uuid
 import datetime
+import logging
 import numpy as np
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -10,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, UploadFile, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.models import Enrollment, VerificationLog, Challenge, User
-from app.utils.normalize_transcription import normalize_numbers_to_words
 from app.utils.openai_client import convert_digits_to_words
 from app.utils.audio import transcribe_audio, compute_embedding, convert_to_wav
 from app.utils.verification import cosine_similarity, fuzzy_match
@@ -21,12 +22,9 @@ from app.auth import verify_token
 from app.anti_spoofing.aasist import aasist_score
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-SIMILARITY_THRESHOLD = 0.65
-CHALLENGE_TTL = 120
-SPOOF_THRESHOLD = 0.30
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-MATCH_THRESHOLD = 0.20  # Similarity threshold for challenge verification
 
 _DETECTOR_POOL = ThreadPoolExecutor(max_workers=2)
 
@@ -42,26 +40,21 @@ async def secure_verify(
     token_data: dict = Depends(verify_token),
     db: Session = Depends(get_db),
 ):
-    print("\n[DEBUG] --- Starting /secure-verify-voice ---")
-
     # ✅ Step 0: Validate user ID
     user_id = token_data.get("user_id")
-    print(f"[DEBUG] Token user_id: {user_id}")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
     try:
         user_uuid = uuid.UUID(user_id)
     except ValueError:
-        print("[DEBUG] Invalid user_id format")
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 
-    if not audio or not audio.content_type.startswith("audio/"):
+    if not audio or not audio.content_type or not audio.content_type.startswith("audio/"):
         raise HTTPException(status_code=400, detail="Invalid or missing audio file")
 
     # ✅ Step 1: Fetch user
     user = db.query(User).filter(User.id == user_uuid).first()
-    print(f"[DEBUG] Fetched user: {user}")
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -72,15 +65,12 @@ async def secure_verify(
         .order_by(Challenge.created_at.desc())
         .first()
     )
-    print(f"[DEBUG] Latest challenge: {challenge}")
-
     if not challenge:
         raise HTTPException(status_code=400, detail="No active challenge found")
 
     # ✅ Step 3: Expiry check
     age = (datetime.datetime.utcnow() - challenge.created_at).total_seconds()
-    print(f"[DEBUG] Challenge age: {age}s")
-    if age > CHALLENGE_TTL:
+    if age > settings.CHALLENGE_TTL:
         db.delete(challenge)
         db.commit()
         raise HTTPException(status_code=400, detail="Challenge expired")
@@ -95,32 +85,24 @@ async def secure_verify(
 
         tmpfile.seek(0)
         tmpdir = tempfile.mkdtemp()
-        print(f"[DEBUG] Temp directory created at: {tmpdir}")
 
         try:
             # ✅ Step 4: Save uploaded audio properly
             audio_path = os.path.join(tmpdir, audio.filename)
-            print(f"[DEBUG] Saving uploaded audio to {audio_path}")
             with open(audio_path, "wb") as f:
                 tmpfile.seek(0)
                 shutil.copyfileobj(tmpfile, f)
 
             # ✅ Step 5: Transcribe (language-aware)
-            print(f"[DEBUG] Transcribing audio using language: {user.lang or 'auto'}")
             transcript = await transcribe_audio(audio_path, language=user.lang or "auto")
-            print(f"[DEBUG] Transcript result: {transcript}")
-
-            # transcript = normalize_numbers_to_words(transcript)
             transcript = await convert_digits_to_words(transcript, user.lang)
-            print(f"Challenge spoken: {transcript}")
 
             # ✅ Step 6: Phrase verification
-            print(f"[DEBUG] Comparing transcript to challenge text: {challenge.text}")
-            matched, ratio = fuzzy_match(transcript, challenge.text, threshold=MATCH_THRESHOLD)
-            print(f"[DEBUG] Phrase match result: matched={matched}, ratio={ratio}")
+            matched, ratio = fuzzy_match(transcript, challenge.text, threshold=settings.MATCH_THRESHOLD)
+            logger.debug("Verify user=%s phrase match=%s ratio=%.2f", user_uuid, matched, ratio)
 
             if not matched:
-                print("[DEBUG] Phrase mismatch — logging and aborting.")
+                logger.info("Verify user=%s rejected: phrase mismatch (ratio=%.2f)", user_uuid, ratio)
                 db.add(
                     VerificationLog(
                         user_id=user_uuid,
@@ -138,14 +120,22 @@ async def secure_verify(
                 )
 
             # ✅ Step 7: Anti-spoofing
-            print("[DEBUG] Running AASIST anti-spoofing detection...")
             wav_path = convert_to_wav(audio_path)
             aasist_raw = await _run_detector_in_executor(aasist_score, wav_path)
             spoof_prob = float(np.clip(aasist_raw, 0.0, 1.0))
-            print(f"[DEBUG] AASIST score={aasist_raw}, spoof_prob={spoof_prob}")
 
-            if spoof_prob > SPOOF_THRESHOLD:
-                print("[DEBUG] Spoof detected! Logging and aborting.")
+            if spoof_prob > settings.SPOOF_THRESHOLD:
+                logger.info("Verify user=%s rejected: spoof detected (spoof_prob=%.4f)", user_uuid, spoof_prob)
+                db.add(
+                    VerificationLog(
+                        user_id=user_uuid,
+                        phrase=transcript,
+                        liveness_verified=False,
+                        identity_verified=False,
+                        aasist_score=spoof_prob,
+                        spoof_prob=spoof_prob,
+                    )
+                )
                 db.delete(challenge)
                 db.commit()
                 raise HTTPException(
@@ -154,27 +144,22 @@ async def secure_verify(
                 )
 
             # ✅ Step 8: Speaker verification
-            print("[DEBUG] Loading enrollment embedding...")
             enrollment = (
                 db.query(Enrollment)
                 .filter(Enrollment.user_id == user_uuid, Enrollment.is_final == True)
                 .first()
             )
-            print(f"[DEBUG] Enrollment found: {enrollment is not None}")
             if not enrollment or not enrollment.embedding:
                 raise HTTPException(status_code=404, detail="User not fully enrolled")
 
-            print("[DEBUG] Computing new embedding...")
             enrolled_embedding = np.frombuffer(enrollment.embedding, dtype=np.float32).flatten()
             new_embedding = compute_embedding(audio_path).flatten()
             similarity = cosine_similarity(new_embedding, enrolled_embedding)
-            print(f"[DEBUG] Computed similarity={similarity:.4f}")
 
-            verified = similarity > SIMILARITY_THRESHOLD
-            print(f"[DEBUG] Verification passed={verified}")
+            verified = similarity > settings.SIMILARITY_THRESHOLD
 
             if not verified:
-                print("[DEBUG] Voice mismatch — logging failure.")
+                logger.info("Verify user=%s rejected: voice mismatch (similarity=%.4f)", user_uuid, similarity)
                 db.add(
                     VerificationLog(
                         user_id=user_uuid,
@@ -194,13 +179,7 @@ async def secure_verify(
                 )
 
             # ✅ Step 9: Upload and success
-            print("[DEBUG] Uploading audio to S3...")
-            s3_uri = upload_audio(
-                audio_path,
-                str(user_uuid),
-                f"verifications/{uuid.uuid4()}-{audio.filename}",
-            )
-            print(f"[DEBUG] Uploaded audio URL: {s3_uri}")
+            s3_uri = upload_audio(audio_path, f"audio/{user_uuid}/verifications", audio.filename)
 
             log = VerificationLog(
                 user_id=user_uuid,
@@ -214,7 +193,9 @@ async def secure_verify(
             db.add(log)
             db.delete(challenge)
             db.commit()
-            print("[DEBUG] Verification complete and committed to DB.")
+            logger.info(
+                "Verify user=%s succeeded (similarity=%.4f, spoof_prob=%.4f)", user_uuid, similarity, spoof_prob
+            )
 
             return {
                 "verified": True,
@@ -227,16 +208,14 @@ async def secure_verify(
                 "language_used": user.lang or "auto",
             }
 
-        except HTTPException as e:
-            print(f"[DEBUG] HTTPException caught: {e.detail}")
+        except HTTPException:
             raise
         except Exception as e:
-            print(f"[DEBUG] Unexpected error: {str(e)}")
+            logger.exception("Verify user=%s failed with an unexpected error", user_uuid)
             db.rollback()
             if challenge in db:
                 db.delete(challenge)
                 db.commit()
             raise HTTPException(status_code=500, detail=str(e))
         finally:
-            print(f"[DEBUG] Cleaning up temp dir: {tmpdir}")
             shutil.rmtree(tmpdir, ignore_errors=True)

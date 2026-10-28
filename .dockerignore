@@ -12,3 +12,13 @@ test_audio.wav
 
 /venvTruevoice
 .env
+
+# Not needed in the image
+venv*/
+aasist_backup/
+tests/
+docs/
+*.sql
+.env.*
+!.env.example
+.github/

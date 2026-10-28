@@ -33,8 +33,10 @@ class Company(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, unique=True, index=True)
-    api_key = Column(String, unique=True, index=True)
-    api_secret = Column(String, nullable=False)
+    # Only hashes are stored; see app/utils/security.py
+    api_key_hash = Column(String(64), unique=True, index=True, nullable=False)
+    api_key_prefix = Column(String(16), nullable=True)  # non-secret, for display
+    api_secret_hash = Column(String(64), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # ✅ One-to-many: Company → Users

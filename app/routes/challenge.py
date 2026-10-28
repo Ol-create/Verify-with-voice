@@ -19,8 +19,13 @@ async def get_challenge(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
     # Fetch user
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(User.id == user_uuid).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -29,7 +34,7 @@ async def get_challenge(
 
     # Insert challenge into DB
     challenge = Challenge(
-        user_id=uuid.UUID(user_id),
+        user_id=user_uuid,
         text=challenge_text,
         created_at=datetime.datetime.utcnow()
     )

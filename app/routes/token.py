@@ -1,3 +1,4 @@
+import uuid
 from datetime import timedelta, datetime
 from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException, Header
@@ -6,11 +7,28 @@ from app.models import User, Company
 from app.schemas import TokenRequest, TokenResponse, RefreshRequest
 from app.auth import create_access_token
 from app.config import settings
-from app.utils.security import encrypt_secret, decrypt_secret  # ✅ encryption utils
+from app.utils.security import hash_credential, verify_credential
 from jose import jwt, JWTError
 
 router = APIRouter()
-REFRESH_TOKEN_EXPIRE_DAYS = 30
+
+
+def _create_refresh_token(user: User) -> str:
+    """Create a refresh token and store only its hash on the user."""
+    expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_token = jwt.encode(
+        {
+            "user_id": str(user.id),
+            "company_id": str(user.company_id),
+            "type": "refresh",
+            "exp": datetime.utcnow() + expires,
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    user.refresh_token = hash_credential(refresh_token)
+    user.refresh_token_expiry = datetime.utcnow() + expires
+    return refresh_token
 
 
 @router.post("/token", response_model=TokenResponse)
@@ -21,34 +39,20 @@ async def generate_token(
     x_api_secret: str = Header(..., alias="X-API-SECRET"),
 ):
     """
-    Authenticate using encrypted API credentials.
-    Accepts raw X-API-KEY and X-API-SECRET, decrypts stored values, 
-    and compares them directly.
+    Issue access + refresh tokens for one of the company's end users.
+    The company authenticates with its API key and secret; only their hashes are stored.
     """
+    company = (
+        db.query(Company)
+        .filter(Company.api_key_hash == hash_credential(x_api_key))
+        .first()
+    )
+    if not company or not verify_credential(x_api_secret, company.api_secret_hash):
+        raise HTTPException(status_code=401, detail="Invalid API key or secret")
 
-    # ✅ Retrieve the company using encrypted key (cannot query by raw)
-    companies = db.query(Company).all()
-
-    company = None
-    for c in companies:
-        try:
-            decrypted_key = decrypt_secret(c.api_key)
-            if decrypted_key == x_api_key:
-                company = c
-                break
-        except Exception:
-            continue
-
-    if not company:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    # ✅ Verify secret
-    try:
-        decrypted_secret = decrypt_secret(company.api_secret)
-        if decrypted_secret != x_api_secret:
-            raise HTTPException(status_code=401, detail="Invalid API secret")
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid API secret")
+    # company_id in the body is optional; the API key already identifies the company
+    if payload.company_id and payload.company_id != company.id:
+        raise HTTPException(status_code=403, detail="company_id does not match the API key")
 
     if not payload.user_id:
         raise HTTPException(status_code=400, detail="user_id is required")
@@ -74,30 +78,10 @@ async def generate_token(
         db.commit()
 
     # --- Token Generation ---
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
     access_token = create_access_token(
         data={"user_id": str(user.id), "company_id": str(company.id), "lang": user.lang},
-        expires_delta=access_token_expires,
     )
-
-    refresh_token_payload = {
-        "user_id": str(user.id),
-        "company_id": str(company.id),
-        "type": "refresh",
-        "exp": datetime.utcnow() + refresh_token_expires,
-    }
-
-    refresh_token = jwt.encode(
-        refresh_token_payload,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
-    )
-
-    # --- Save refresh token in DB ---
-    user.refresh_token = refresh_token
-    user.refresh_token_expiry = datetime.utcnow() + refresh_token_expires
+    refresh_token = _create_refresh_token(user)
     db.commit()
 
     return {
@@ -116,29 +100,35 @@ async def refresh_access_token(payload: RefreshRequest, db: Session = Depends(ge
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
         )
-        if data.get("type") != "refresh":
-            raise HTTPException(status_code=401, detail="Invalid token type")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    user_id = data.get("user_id")
-    company_id = data.get("company_id")
+    if data.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    try:
+        user_id = uuid.UUID(data.get("user_id"))
+        company_id = uuid.UUID(data.get("company_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid or revoked refresh token")
 
     user = (
         db.query(User)
         .filter(User.id == user_id, User.company_id == company_id)
         .first()
     )
-    if not user or user.refresh_token != payload.refresh_token:
+    if (
+        not user
+        or not user.refresh_token
+        or not verify_credential(payload.refresh_token, user.refresh_token)
+    ):
         raise HTTPException(status_code=401, detail="Invalid or revoked refresh token")
 
     if user.refresh_token_expiry and user.refresh_token_expiry < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"user_id": str(user.id), "company_id": str(company_id), "lang": user.lang},
-        expires_delta=access_token_expires,
+        data={"user_id": str(user.id), "company_id": str(user.company_id), "lang": user.lang},
     )
 
     return {
@@ -151,7 +141,11 @@ async def refresh_access_token(payload: RefreshRequest, db: Session = Depends(ge
 
 @router.post("/token/revoke")
 async def revoke_refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.refresh_token == payload.refresh_token).first()
+    user = (
+        db.query(User)
+        .filter(User.refresh_token == hash_credential(payload.refresh_token))
+        .first()
+    )
     if not user:
         raise HTTPException(status_code=404, detail="Token not found")
 

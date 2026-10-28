@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Dummy values: the tests mock every external service, and the migration
+    # check runs against a throwaway SQLite file.
+    env:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: ci
+      DB_USER: ci
+      DB_PASS: ci
+      JWT_SECRET: ci-access-secret
+      SECRET_KEY: ci-refresh-secret
+      OPENAI_API_KEY: sk-ci
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: ci-bucket
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run tests
+        run: pytest -v
+
+      - name: Check migrations apply to a fresh database
+        env:
+          ALEMBIC_DATABASE_URL: sqlite:///ci_migrations.db
+        run: alembic upgrade head
