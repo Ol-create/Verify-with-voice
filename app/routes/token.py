@@ -3,7 +3,7 @@ from datetime import timedelta, datetime
 from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException, Header
 from app.db import get_db
-from app.models import User, Company
+from app.models import ApiCredential, COMPANY_ACTIVE, User
 from app.schemas import TokenRequest, TokenResponse, RefreshRequest
 from app.auth import create_access_token
 from app.config import settings
@@ -13,13 +13,14 @@ from jose import jwt, JWTError
 router = APIRouter()
 
 
-def _create_refresh_token(user: User) -> str:
+def _create_refresh_token(user: User, credential_id: str | None) -> str:
     """Create a refresh token and store only its hash on the user."""
     expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     refresh_token = jwt.encode(
         {
             "user_id": str(user.id),
             "company_id": str(user.company_id),
+            "credential_id": credential_id,
             "type": "refresh",
             "exp": datetime.utcnow() + expires,
         },
@@ -31,6 +32,11 @@ def _create_refresh_token(user: User) -> str:
     return refresh_token
 
 
+def _require_active_company(company) -> None:
+    if company.status != COMPANY_ACTIVE:
+        raise HTTPException(status_code=403, detail=f"Company account is {company.status}")
+
+
 @router.post("/token", response_model=TokenResponse)
 async def generate_token(
     payload: TokenRequest,
@@ -40,15 +46,19 @@ async def generate_token(
 ):
     """
     Issue access + refresh tokens for one of the company's end users.
-    The company authenticates with its API key and secret; only their hashes are stored.
+    The company authenticates with one of its API keys and its secret; only their hashes are stored.
     """
-    company = (
-        db.query(Company)
-        .filter(Company.api_key_hash == hash_credential(x_api_key))
+    credential = (
+        db.query(ApiCredential)
+        .filter(ApiCredential.key_hash == hash_credential(x_api_key), ApiCredential.revoked_at.is_(None))
         .first()
     )
-    if not company or not verify_credential(x_api_secret, company.api_secret_hash):
+    if not credential or not verify_credential(x_api_secret, credential.secret_hash):
         raise HTTPException(status_code=401, detail="Invalid API key or secret")
+
+    company = credential.company
+    _require_active_company(company)
+    credential.last_used_at = datetime.utcnow()
 
     # company_id in the body is optional; the API key already identifies the company
     if payload.company_id and payload.company_id != company.id:
@@ -78,10 +88,16 @@ async def generate_token(
         db.commit()
 
     # --- Token Generation ---
+    credential_id = str(credential.id)
     access_token = create_access_token(
-        data={"user_id": str(user.id), "company_id": str(company.id), "lang": user.lang},
+        data={
+            "user_id": str(user.id),
+            "company_id": str(company.id),
+            "credential_id": credential_id,
+            "lang": user.lang,
+        },
     )
-    refresh_token = _create_refresh_token(user)
+    refresh_token = _create_refresh_token(user, credential_id)
     db.commit()
 
     return {
@@ -127,8 +143,25 @@ async def refresh_access_token(payload: RefreshRequest, db: Session = Depends(ge
     if user.refresh_token_expiry and user.refresh_token_expiry < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
+    _require_active_company(user.company)
+
+    # Revoking an API key also ends the sessions it issued
+    credential_id = data.get("credential_id")
+    if credential_id:
+        try:
+            credential = db.get(ApiCredential, uuid.UUID(credential_id))
+        except ValueError:
+            credential = None
+        if not credential or not credential.is_active or credential.company_id != user.company_id:
+            raise HTTPException(status_code=401, detail="Invalid or revoked refresh token")
+
     access_token = create_access_token(
-        data={"user_id": str(user.id), "company_id": str(user.company_id), "lang": user.lang},
+        data={
+            "user_id": str(user.id),
+            "company_id": str(user.company_id),
+            "credential_id": credential_id,
+            "lang": user.lang,
+        },
     )
 
     return {

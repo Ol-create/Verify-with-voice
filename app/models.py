@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Boolean,
     Integer,
+    CheckConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -28,19 +29,55 @@ class Challenge(Base):
     user = relationship("User", back_populates="challenges")
 
 
+COMPANY_PENDING = "pending"  # signed up, not yet approved or paid
+COMPANY_ACTIVE = "active"
+COMPANY_SUSPENDED = "suspended"
+COMPANY_STATUSES = (COMPANY_PENDING, COMPANY_ACTIVE, COMPANY_SUSPENDED)
+
+
 class Company(Base):
     __tablename__ = "companies"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'active', 'suspended')", name="ck_companies_status"
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, unique=True, index=True)
-    # Only hashes are stored; see app/utils/security.py
-    api_key_hash = Column(String(64), unique=True, index=True, nullable=False)
-    api_key_prefix = Column(String(16), nullable=True)  # non-secret, for display
-    api_secret_hash = Column(String(64), nullable=False)
+    email = Column(String, nullable=True)
+    # Only active companies can get tokens
+    status = Column(String(16), nullable=False, default=COMPANY_ACTIVE, server_default=COMPANY_ACTIVE)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # ✅ One-to-many: Company → Users
     users = relationship("User", back_populates="company")
+    credentials = relationship("ApiCredential", back_populates="company", cascade="all, delete-orphan")
+
+
+class ApiCredential(Base):
+    """
+    One API key + secret pair. A company can hold several, so keys can be rotated
+    without downtime: create a new one, deploy it, then revoke the old one.
+    Only hashes are stored; see app/utils/security.py
+    """
+    __tablename__ = "api_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False, index=True)
+    name = Column(String(64), nullable=False, default="default")
+    key_prefix = Column(String(16), nullable=False)  # non-secret, for display
+    key_hash = Column(String(64), nullable=False, unique=True, index=True)
+    secret_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    company = relationship("Company", back_populates="credentials")
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
 
 
 class User(Base):

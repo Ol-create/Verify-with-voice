@@ -62,7 +62,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.auth import create_access_token  # noqa: E402
 from app.db import Base, get_db  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
-from app.models import Company, User  # noqa: E402
+from app.models import ApiCredential, Company, User  # noqa: E402
 from app.utils.security import display_prefix, hash_credential  # noqa: E402
 
 from fakes import API_KEY, API_SECRET, CHALLENGE, EMBEDDING  # noqa: E402
@@ -103,12 +103,13 @@ def db_session():
 
 @pytest.fixture
 def company(db_session):
-    company = Company(
-        name="Acme Bank",
-        api_key_hash=hash_credential(API_KEY),
-        api_key_prefix=display_prefix(API_KEY),
-        api_secret_hash=hash_credential(API_SECRET),
-    )
+    company = Company(name="Acme Bank", status="active")
+    company.credentials.append(ApiCredential(
+        name="default",
+        key_prefix=display_prefix(API_KEY),
+        key_hash=hash_credential(API_KEY),
+        secret_hash=hash_credential(API_SECRET),
+    ))
     db_session.add(company)
     db_session.commit()
     db_session.refresh(company)

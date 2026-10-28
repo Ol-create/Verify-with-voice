@@ -4,17 +4,17 @@
 
 | Area | Status |
 |---|---|
-| Companies | `companies` table; API key + secret stored as SHA-256 hashes (migration `b7c1d2e3f4a5`) |
-| Company onboarding | CLI only: `python -m scripts.manage_company create/rotate "<name>"` |
+| Companies | `companies` with `status` (pending/active/suspended) and `email`; several revocable keys per company in `api_credentials`, stored as SHA-256 hashes |
+| Company onboarding | CLI only: `python -m scripts.manage_company create/add-key/list-keys/revoke-key/rotate/suspend/activate` |
 | End users | `users` table, one row per (company, external_user_id), with language |
 | Tokens | `POST /v1/token` (X-API-KEY + X-API-SECRET), `/v1/token/refresh`, `/v1/token/revoke`; access tokens carry `type=access`, `user_id`, `company_id` |
 | Voice | `GET /v1/challenge` → `POST /v1/enroll-voice` (3 samples, averaged) → `POST /v1/secure-verify-voice`; AASIST anti-spoofing; Whisper transcription; ECAPA embeddings |
 | Rate limiting | slowapi, per company (falls back to per IP), `RATE_LIMIT` setting |
 | Schema | Alembic owns it; `create_all` removed |
-| Tests | 41 tests in `tests/`, everything external mocked; CI runs them |
+| Tests | 51 tests in `tests/`, everything external mocked; CI runs them |
 | Deploy | AWS Lambda via Mangum (`handler` in `app/main.py`); DB moving to Supabase (branch `feat/add-supabaseDB`) |
 
-**Missing for a paid product:** company status (active/suspended), plans, subscriptions, usage metering, quotas, admin accounts, a self-service portal, payments, and multiple keys per company.
+**Missing for a paid product:** plans, subscriptions, usage metering, quotas, admin accounts, a self-service portal, and payments.
 
 ## Target architecture
 
@@ -84,7 +84,7 @@ refactor: structured logging, configurable thresholds and dead code removal
 
 ## Phase 1: Billing-ready core (backend)
 
-### T1.1 Company status and multiple API keys
+### ✅ T1.1 Company status and multiple API keys (done: migration `c4e8a1f2b3d6`)
 - `Company.status`: `pending` / `active` / `suspended` (default `active` for existing rows) and `email`.
 - New `ApiCredential` table: id, company_id, name, key_prefix, key_hash (unique), secret_hash, created_at, last_used_at, revoked_at. This allows key rotation without downtime (create new → deploy → revoke old).
 - Migration: copy each company's `api_key_hash` / `api_key_prefix` / `api_secret_hash` into one `ApiCredential` row named "default", then drop those columns from `companies`.

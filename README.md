@@ -81,11 +81,17 @@ alembic revision --autogenerate -m "describe the change"
 Companies are created from the command line for now (an admin app is on the [roadmap](docs/ROADMAP.md)):
 
 ```bash
-python -m scripts.manage_company create "Acme Bank"
-python -m scripts.manage_company rotate "Acme Bank"
+python -m scripts.manage_company create "Acme Bank" --email ops@acme.com
+python -m scripts.manage_company add-key "Acme Bank" --key-name production
+python -m scripts.manage_company list-keys "Acme Bank"
+python -m scripts.manage_company revoke-key <credential id from list-keys>
+python -m scripts.manage_company rotate "Acme Bank"     # emergency: revoke every key, issue one new key
+python -m scripts.manage_company suspend "Acme Bank"    # or: activate
 ```
 
-The API key and secret are printed once. Only their hashes are stored, so they can't be shown again; if they're lost, rotate them.
+API keys and secrets are printed once. Only their hashes are stored, so they can't be shown again; if they're lost, add a new key and revoke the old one.
+
+A company can hold several keys. To rotate without downtime: `add-key`, deploy the new key, then `revoke-key` the old one. Revoking a key also stops refresh tokens issued with it. Only `active` companies get tokens; `pending` and `suspended` ones get 403.
 
 ### Run
 

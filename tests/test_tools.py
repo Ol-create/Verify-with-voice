@@ -4,7 +4,7 @@ import asyncio
 import re
 from unittest.mock import AsyncMock, patch
 
-from app.models import Company
+from app.models import ApiCredential, Company
 from app.utils.openai_client import convert_digits_to_words
 from app.utils.storage import upload_audio
 from app.utils.verification import fuzzy_match
@@ -35,8 +35,10 @@ def test_create_company_prints_working_credentials(client, capsys, db_session):
     key, secret = _printed_credentials(capsys)
 
     company = db_session.query(Company).filter_by(name="Globex").one()
-    assert company.api_key_prefix == key[:12]
-    assert key not in (company.api_key_hash, company.api_secret_hash)
+    assert company.status == "active"
+    credential = db_session.query(ApiCredential).filter_by(company_id=company.id).one()
+    assert credential.key_prefix == key[:12]
+    assert key not in (credential.key_hash, credential.secret_hash)
 
     res = client.post("/v1/token", headers={"X-API-KEY": key, "X-API-SECRET": secret}, json={"user_id": "u1"})
     assert res.status_code == 200
@@ -62,6 +64,45 @@ def test_rotate_replaces_old_credentials(client, capsys):
 
 def test_rotate_unknown_company(capsys):
     assert manage_company.main(["rotate", "Nobody"]) == 1
+
+
+def _token(client, key, secret):
+    return client.post("/v1/token", headers={"X-API-KEY": key, "X-API-SECRET": secret}, json={"user_id": "u1"})
+
+
+def test_add_key_then_revoke_old_one(client, capsys, db_session):
+    manage_company.main(["create", "Globex", "--email", "ops@globex.test"])
+    old = _printed_credentials(capsys)
+    assert manage_company.main(["add-key", "Globex", "--key-name", "production"]) == 0
+    new = _printed_credentials(capsys)
+
+    # both keys work during the switch-over
+    assert _token(client, *old).status_code == 200
+    assert _token(client, *new).status_code == 200
+
+    old_id = db_session.query(ApiCredential).filter_by(name="default").one().id
+    assert manage_company.main(["revoke-key", str(old_id)]) == 0
+    assert _token(client, *old).status_code == 401
+    assert _token(client, *new).status_code == 200
+
+    manage_company.main(["list-keys", "Globex"])
+    listing = capsys.readouterr().out
+    assert "production" in listing and "revoked" in listing
+    assert old[0] not in listing and old[1] not in listing  # only prefixes are shown
+
+
+def test_revoke_unknown_key(capsys):
+    assert manage_company.main(["revoke-key", "not-a-uuid"]) == 1
+
+
+def test_suspend_and_activate(client, capsys):
+    manage_company.main(["create", "Globex"])
+    key, secret = _printed_credentials(capsys)
+
+    assert manage_company.main(["suspend", "Globex"]) == 0
+    assert _token(client, key, secret).status_code == 403
+    assert manage_company.main(["activate", "Globex"]) == 0
+    assert _token(client, key, secret).status_code == 200
 
 
 def test_fuzzy_match_ignores_case_and_punctuation():
