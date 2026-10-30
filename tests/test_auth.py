@@ -190,3 +190,61 @@ def test_rate_limit_key_falls_back_to_ip(user):
     forged = jwt.encode({"type": "access", "company_id": str(user.company_id)}, "wrong", algorithm="HS256")
     assert rate_limit_key(_request({})) == "ip:1.2.3.4"
     assert rate_limit_key(_request({"authorization": f"Bearer {forged}"})) == "ip:1.2.3.4"
+
+
+# --- get_current_user: checked on every voice request ---
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_suspending_company_blocks_existing_access_tokens(client, company, api_headers, db_session, wav_file):
+    access = get_token(client, api_headers).json()["access_token"]
+    assert client.get("/v1/challenge", headers=_bearer(access)).status_code == 200
+
+    db_session.get(Company, company.id).status = "suspended"
+    db_session.commit()
+
+    for res in (
+        client.get("/v1/challenge", headers=_bearer(access)),
+        client.post("/v1/enroll-voice", headers=_bearer(access), files={"audio": wav_file}),
+        client.post("/v1/secure-verify-voice", headers=_bearer(access), files={"audio": wav_file}),
+    ):
+        assert res.status_code == 403
+        assert res.json()["detail"] == "Company account is suspended"
+
+
+def test_revoking_key_blocks_existing_access_tokens(client, company, api_headers, db_session):
+    access = get_token(client, api_headers).json()["access_token"]
+    revoke_credential(db_session.query(ApiCredential).one())
+    db_session.commit()
+    assert client.get("/v1/challenge", headers=_bearer(access)).status_code == 401
+
+
+def test_other_keys_unaffected_by_revocation(client, company, api_headers, db_session):
+    _, key, secret = issue_credential(db_session, db_session.get(Company, company.id), "production")
+    db_session.commit()
+    access = get_token(client, {"X-API-KEY": key, "X-API-SECRET": secret}).json()["access_token"]
+
+    revoke_credential(db_session.query(ApiCredential).filter_by(name="default").one())
+    db_session.commit()
+    assert client.get("/v1/challenge", headers=_bearer(access)).status_code == 200
+
+
+def test_token_for_unknown_user_is_404(client, company):
+    import uuid
+    token = create_access_token({"user_id": str(uuid.uuid4()), "company_id": str(company.id)})
+    assert client.get("/v1/challenge", headers=_bearer(token)).status_code == 404
+
+
+def test_token_with_wrong_company_for_user_is_404(client, user, db_session):
+    other = Company(name="Other")
+    db_session.add(other)
+    db_session.commit()
+    token = create_access_token({"user_id": str(user.id), "company_id": str(other.id)})
+    assert client.get("/v1/challenge", headers=_bearer(token)).status_code == 404
+
+
+def test_token_with_malformed_ids_is_401(client, user):
+    token = create_access_token({"user_id": "not-a-uuid", "company_id": str(user.company_id)})
+    assert client.get("/v1/challenge", headers=_bearer(token)).status_code == 401

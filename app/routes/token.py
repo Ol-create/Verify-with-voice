@@ -3,9 +3,9 @@ from datetime import timedelta, datetime
 from sqlalchemy.orm import Session
 from fastapi import Depends, APIRouter, HTTPException, Header
 from app.db import get_db
-from app.models import ApiCredential, COMPANY_ACTIVE, User
+from app.models import ApiCredential, User
 from app.schemas import TokenRequest, TokenResponse, RefreshRequest
-from app.auth import create_access_token
+from app.auth import create_access_token, require_active_company
 from app.config import settings
 from app.utils.security import hash_credential, verify_credential
 from jose import jwt, JWTError
@@ -32,11 +32,6 @@ def _create_refresh_token(user: User, credential_id: str | None) -> str:
     return refresh_token
 
 
-def _require_active_company(company) -> None:
-    if company.status != COMPANY_ACTIVE:
-        raise HTTPException(status_code=403, detail=f"Company account is {company.status}")
-
-
 @router.post("/token", response_model=TokenResponse)
 async def generate_token(
     payload: TokenRequest,
@@ -57,7 +52,7 @@ async def generate_token(
         raise HTTPException(status_code=401, detail="Invalid API key or secret")
 
     company = credential.company
-    _require_active_company(company)
+    require_active_company(company)
     credential.last_used_at = datetime.utcnow()
 
     # company_id in the body is optional; the API key already identifies the company
@@ -143,7 +138,7 @@ async def refresh_access_token(payload: RefreshRequest, db: Session = Depends(ge
     if user.refresh_token_expiry and user.refresh_token_expiry < datetime.utcnow():
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
-    _require_active_company(user.company)
+    require_active_company(user.company)
 
     # Revoking an API key also ends the sessions it issued
     credential_id = data.get("credential_id")

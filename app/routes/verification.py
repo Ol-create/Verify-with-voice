@@ -1,7 +1,6 @@
 import os
 import shutil
 import tempfile
-import uuid
 import datetime
 import logging
 import numpy as np
@@ -18,7 +17,7 @@ from app.utils.openai_client import convert_digits_to_words
 from app.utils.audio import transcribe_audio, compute_embedding, convert_to_wav
 from app.utils.verification import cosine_similarity, fuzzy_match
 from app.utils.storage import upload_audio
-from app.auth import verify_token
+from app.auth import get_current_user
 from app.anti_spoofing.aasist import aasist_score
 
 router = APIRouter()
@@ -37,28 +36,15 @@ async def _run_detector_in_executor(fn, audio_path: str):
 @router.post("/secure-verify-voice")
 async def secure_verify(
     audio: UploadFile,
-    token_data: dict = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # ✅ Step 0: Validate user ID
-    user_id = token_data.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-
-    try:
-        user_uuid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id format")
+    user_uuid = user.id
 
     if not audio or not audio.content_type or not audio.content_type.startswith("audio/"):
         raise HTTPException(status_code=400, detail="Invalid or missing audio file")
 
-    # ✅ Step 1: Fetch user
-    user = db.query(User).filter(User.id == user_uuid).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # ✅ Step 2: Get most recent challenge
+    # ✅ Step 1: Get most recent challenge
     challenge = (
         db.query(Challenge)
         .filter(Challenge.user_id == user_uuid)
@@ -68,7 +54,7 @@ async def secure_verify(
     if not challenge:
         raise HTTPException(status_code=400, detail="No active challenge found")
 
-    # ✅ Step 3: Expiry check
+    # ✅ Step 2: Expiry check
     age = (datetime.datetime.utcnow() - challenge.created_at).total_seconds()
     if age > settings.CHALLENGE_TTL:
         db.delete(challenge)
@@ -87,17 +73,17 @@ async def secure_verify(
         tmpdir = tempfile.mkdtemp()
 
         try:
-            # ✅ Step 4: Save uploaded audio properly
+            # ✅ Step 3: Save uploaded audio properly
             audio_path = os.path.join(tmpdir, audio.filename)
             with open(audio_path, "wb") as f:
                 tmpfile.seek(0)
                 shutil.copyfileobj(tmpfile, f)
 
-            # ✅ Step 5: Transcribe (language-aware)
+            # ✅ Step 4: Transcribe (language-aware)
             transcript = await transcribe_audio(audio_path, language=user.lang or "auto")
             transcript = await convert_digits_to_words(transcript, user.lang)
 
-            # ✅ Step 6: Phrase verification
+            # ✅ Step 5: Phrase verification
             matched, ratio = fuzzy_match(transcript, challenge.text, threshold=settings.MATCH_THRESHOLD)
             logger.debug("Verify user=%s phrase match=%s ratio=%.2f", user_uuid, matched, ratio)
 
@@ -119,7 +105,7 @@ async def secure_verify(
                     detail="Phrase mismatch! Say the phrase exactly as displayed",
                 )
 
-            # ✅ Step 7: Anti-spoofing
+            # ✅ Step 6: Anti-spoofing
             wav_path = convert_to_wav(audio_path)
             aasist_raw = await _run_detector_in_executor(aasist_score, wav_path)
             spoof_prob = float(np.clip(aasist_raw, 0.0, 1.0))
@@ -143,7 +129,7 @@ async def secure_verify(
                     detail="We detected an artificial voice! Please use your real voice.",
                 )
 
-            # ✅ Step 8: Speaker verification
+            # ✅ Step 7: Speaker verification
             enrollment = (
                 db.query(Enrollment)
                 .filter(Enrollment.user_id == user_uuid, Enrollment.is_final == True)
@@ -178,7 +164,7 @@ async def secure_verify(
                     detail="Verification failed! Voice doesn’t match the enrolled sample. Please try again.",
                 )
 
-            # ✅ Step 9: Upload and success
+            # ✅ Step 8: Upload and success
             s3_uri = upload_audio(audio_path, f"audio/{user_uuid}/verifications", audio.filename)
 
             log = VerificationLog(

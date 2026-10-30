@@ -2,7 +2,6 @@ import os
 import tempfile
 import shutil
 import datetime
-import uuid
 import logging
 import numpy as np
 import asyncio
@@ -18,7 +17,7 @@ from app.utils.audio import compute_embedding, transcribe_audio, convert_to_wav
 from app.utils.verification import fuzzy_match
 from app.utils.storage import upload_audio
 from app.utils.openai_client import convert_digits_to_words
-from app.auth import verify_token
+from app.auth import get_current_user
 from app.anti_spoofing.aasist import aasist_score
 
 router = APIRouter()
@@ -38,19 +37,11 @@ async def _run_detector_in_executor(fn, audio_path: str):
 @router.post("/enroll-voice")
 async def enroll_voice(
     audio: UploadFile,
-    token_data: dict = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Handles multi-sample voice enrollment (3 recordings per user)."""
-
-    user_id = token_data.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-
-    try:
-        user_uuid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id format")
+    user_uuid = user.id
 
     if not audio:
         raise HTTPException(status_code=400, detail="No file uploaded.")
@@ -92,10 +83,6 @@ async def enroll_voice(
             with open(audio_path, "wb") as f:
                 tmpfile.seek(0)
                 shutil.copyfileobj(tmpfile, f)
-
-            user = db.query(User).filter(User.id == user_uuid).first()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
 
             # Step 1: Convert and transcribe
             wav_path = convert_to_wav(audio_path)

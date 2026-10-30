@@ -11,7 +11,7 @@
 | Voice | `GET /v1/challenge` → `POST /v1/enroll-voice` (3 samples, averaged) → `POST /v1/secure-verify-voice`; AASIST anti-spoofing; Whisper transcription; ECAPA embeddings |
 | Rate limiting | slowapi, per company (falls back to per IP), `RATE_LIMIT` setting |
 | Schema | Alembic owns it; `create_all` removed |
-| Tests | 51 tests in `tests/`, everything external mocked; CI runs them |
+| Tests | 57 tests in `tests/`, everything external mocked; CI runs them |
 | Deploy | AWS Lambda via Mangum (`handler` in `app/main.py`); DB moving to Supabase (branch `feat/add-supabaseDB`) |
 
 **Missing for a paid product:** plans, subscriptions, usage metering, quotas, admin accounts, a self-service portal, and payments.
@@ -95,7 +95,7 @@ refactor: structured logging, configurable thresholds and dead code removal
 feat(auth): add company status and multiple revocable API credentials per company
 ```
 
-### T1.2 Current-user dependency
+### ✅ T1.2 Current-user dependency (done: also rejects access tokens from revoked API keys)
 - `get_current_user` in `app/auth.py`: verifies the token (existing `verify_token`), loads the `User` and its `Company` in one query, returns 404/403 if the user is gone or the company is suspended.
 - Replace the repeated "parse UUID → query user → 404" blocks in `challenge.py`, `enrollment.py`, `verification.py`.
 - Suspending a company then blocks existing access tokens immediately, not after expiry.
