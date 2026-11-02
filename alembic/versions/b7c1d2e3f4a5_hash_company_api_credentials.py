@@ -4,11 +4,16 @@ Replaces the Fernet-encrypted companies.api_key / api_secret columns with SHA-25
 hashes, so the API never needs a decryption key and companies can be looked up by
 key hash instead of decrypting every row.
 
-Existing rows are converted in place. That needs the FERNET_KEY the values were
-encrypted with, set as an environment variable while this migration runs (it is not
-needed afterwards). Values that were stored unencrypted (the old "test_tv_" signup
-keys) are hashed as they are. If a value can't be decrypted the migration stops
-before changing anything.
+Existing rows are converted in place. Earlier versions of the app stored credentials
+in four ways, told apart by the format of the API key:
+
+- Fernet tokens: decrypted with FERNET_KEY (set in the environment while this
+  migration runs, not needed afterwards), then hashed
+- "test_tv_" signup keys and downgrade() placeholders: plaintext, hashed as they are
+- 32-character hex keys (secrets.token_hex(16)): plaintext, hashed as they are
+- 64-character hex keys: already SHA-256 hashes (the old hash_secret()), kept as they are
+
+If a value can't be decrypted the migration stops before changing anything.
 
 Revision ID: b7c1d2e3f4a5
 Revises: 042fdfb7c07a
@@ -16,6 +21,7 @@ Create Date: 2026-10-14
 """
 import hashlib
 import os
+import re
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -28,6 +34,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Values stored without encryption: old signup keys, and placeholders left by downgrade()
 PLAINTEXT_PREFIXES = ("test_tv_", "revoked")
+HEX_32 = re.compile(r"[0-9a-f]{32}")  # secrets.token_hex(16) keys, stored unencrypted
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")  # values already hashed by the old hash_secret()
 
 
 def _sha256(value: str) -> str:
@@ -53,6 +61,18 @@ def _plaintext(value: str, fernet) -> str:
         )
 
 
+def _convert(api_key: str, api_secret: str, fernet) -> tuple[str, str | None, str]:
+    """Return (key_hash, key_prefix, secret_hash) for one company row."""
+    # The key's format identifies how the row was stored; the secret was always stored the same way
+    if SHA256_HEX.fullmatch(api_key) and SHA256_HEX.fullmatch(api_secret):
+        return api_key, None, api_secret
+    if HEX_32.fullmatch(api_key):
+        return _sha256(api_key), api_key[:12], _sha256(api_secret)
+    key = _plaintext(api_key, fernet)
+    secret = _plaintext(api_secret, fernet)
+    return _sha256(key), key[:12], _sha256(secret)
+
+
 def upgrade() -> None:
     conn = op.get_bind()
     rows = conn.execute(sa.text("SELECT id, api_key, api_secret FROM companies")).fetchall()
@@ -66,9 +86,7 @@ def upgrade() -> None:
     # Decrypt everything first, so a bad key fails before any schema change
     converted = []
     for company_id, api_key, api_secret in rows:
-        key = _plaintext(api_key, fernet)
-        secret = _plaintext(api_secret, fernet)
-        converted.append((company_id, _sha256(key), key[:12], _sha256(secret)))
+        converted.append((company_id, *_convert(api_key, api_secret, fernet)))
 
     with op.batch_alter_table("companies") as batch:
         batch.add_column(sa.Column("api_key_hash", sa.String(length=64), nullable=True))
