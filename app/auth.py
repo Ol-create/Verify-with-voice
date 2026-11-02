@@ -8,10 +8,11 @@ from typing import Optional
 
 from app.config import settings
 from app.db import get_db
-from app.models import COMPANY_ACTIVE, ApiCredential, Company, User
+from app.models import COMPANY_ACTIVE, AdminUser, ApiCredential, Company, User
 
 # --- Security ---
 security = HTTPBearer()
+admin_security = HTTPBearer(scheme_name="AdminBearer")
 
 # --- JWT Utilities ---
 def create_access_token(data: dict, expires_delta: Optional[datetime.timedelta] = None) -> str:
@@ -84,3 +85,37 @@ def get_current_user(token_data: dict = Depends(verify_token), db: Session = Dep
             raise _unauthorized()
 
     return user
+
+
+# --- Admin tokens: separate secret and type, so end-user tokens never work on /admin ---
+
+def create_admin_token(admin: AdminUser) -> tuple[str, int]:
+    """Return (token, lifetime in seconds)."""
+    lifetime = datetime.timedelta(minutes=settings.ADMIN_TOKEN_EXPIRE_MINUTES)
+    token = jwt.encode(
+        {"sub": str(admin.id), "type": "admin", "exp": datetime.datetime.utcnow() + lifetime},
+        settings.ADMIN_JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    return token, int(lifetime.total_seconds())
+
+
+def get_current_admin(
+    credentials: HTTPAuthorizationCredentials = Depends(admin_security),
+    db: Session = Depends(get_db),
+) -> AdminUser:
+    """The signed-in admin. Deactivated admins are rejected even with an unexpired token."""
+    try:
+        payload = jwt.decode(
+            credentials.credentials, settings.ADMIN_JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+        )
+        if payload.get("type") != "admin":
+            raise _unauthorized()
+        admin_id = uuid.UUID(payload["sub"])
+    except (JWTError, KeyError, TypeError, ValueError):
+        raise _unauthorized()
+
+    admin = db.get(AdminUser, admin_id)
+    if not admin or not admin.is_active:
+        raise _unauthorized()
+    return admin

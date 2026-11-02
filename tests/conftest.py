@@ -25,6 +25,7 @@ TEST_ENV = {
     "DB_PASS": "test",
     "JWT_SECRET": "test-access-secret",
     "SECRET_KEY": "test-refresh-secret",
+    "ADMIN_JWT_SECRET": "test-admin-secret",
     "RATE_LIMIT": "1000/minute",
     "OPENAI_API_KEY": "sk-test",
     "AWS_ACCESS_KEY_ID": "test",

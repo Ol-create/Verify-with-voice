@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # --- Admin dashboard ---
+    ADMIN_JWT_SECRET: str  # signs admin tokens; different from JWT_SECRET and SECRET_KEY
+    ADMIN_TOKEN_EXPIRE_MINUTES: int = 480
+    ADMIN_LOGIN_RATE_LIMIT: str = "5/minute"  # per IP
+
     # --- Rate limiting (per company, falls back to per IP) ---
     RATE_LIMIT: str = "60/minute"
 

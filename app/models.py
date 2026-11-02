@@ -133,3 +133,15 @@ class VerificationLog(Base):
     spoof_prob = Column(Float, nullable=True)
 
     user = relationship("User", back_populates="logs")
+
+
+class AdminUser(Base):
+    """A TrueVoice staff account for the admin dashboard."""
+    __tablename__ = "admin_users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, nullable=False, unique=True, index=True)  # stored lowercase
+    password_hash = Column(String, nullable=False)  # bcrypt; see app/utils/passwords.py
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True)

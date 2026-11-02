@@ -18,6 +18,7 @@ jobs:
       DB_PASS: ci
       JWT_SECRET: ci-access-secret
       SECRET_KEY: ci-refresh-secret
+      ADMIN_JWT_SECRET: ci-admin-secret
       OPENAI_API_KEY: sk-ci
       AWS_ACCESS_KEY_ID: ci
       AWS_SECRET_ACCESS_KEY: ci

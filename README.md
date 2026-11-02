@@ -49,6 +49,8 @@ Copy `.env.example` to `.env` and fill it in. Every secret is required; the app 
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS` | PostgreSQL connection |
 | `JWT_SECRET` | Signs access tokens |
 | `SECRET_KEY` | Signs refresh tokens (use a different value from `JWT_SECRET`) |
+| `ADMIN_JWT_SECRET` | Signs admin dashboard tokens (a third, different value) |
+| `ADMIN_TOKEN_EXPIRE_MINUTES`, `ADMIN_LOGIN_RATE_LIMIT` | Admin session length (default `480`) and login attempts per IP (default `5/minute`) |
 | `RATE_LIMIT` | Requests per company (or per IP without a token), e.g. `60/minute` |
 | `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING` or `ERROR` |
 | `CHALLENGE_TTL` | Seconds a challenge phrase stays valid (default `120`) |
@@ -92,6 +94,18 @@ python -m scripts.manage_company suspend "Acme Bank"    # or: activate
 API keys and secrets are printed once. Only their hashes are stored, so they can't be shown again; if they're lost, add a new key and revoke the old one.
 
 A company can hold several keys. To rotate without downtime: `add-key`, deploy the new key, then `revoke-key` the old one. Revoking a key also stops refresh tokens issued with it. Only `active` companies get tokens; `pending` and `suspended` ones get 403.
+
+### Admins
+
+Admins sign in to the admin API (`/admin/*`) and, later, the admin dashboard. Create the first one from the command line; the password is asked for at a hidden prompt (at least 12 characters):
+
+```bash
+python -m scripts.create_admin --email you@example.com
+python -m scripts.create_admin --email you@example.com --reset-password
+python -m scripts.create_admin --email you@example.com --deactivate      # or --activate
+```
+
+`POST /admin/auth/login` with `{"email", "password"}` returns an admin token; send it as `Authorization: Bearer <token>`. `GET /admin/auth/me` returns the signed-in admin. Admin tokens and end-user tokens use different secrets, so neither works on the other's routes.
 
 ### Run
 

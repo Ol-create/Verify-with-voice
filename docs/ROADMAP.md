@@ -11,7 +11,7 @@
 | Voice | `GET /v1/challenge` → `POST /v1/enroll-voice` (3 samples, averaged) → `POST /v1/secure-verify-voice`; AASIST anti-spoofing; Whisper transcription; ECAPA embeddings |
 | Rate limiting | slowapi, per company (falls back to per IP), `RATE_LIMIT` setting |
 | Schema | Alembic owns it; `create_all` removed |
-| Tests | 57 tests in `tests/`, everything external mocked; CI runs them |
+| Tests | 73 tests in `tests/`, everything external mocked; CI runs them |
 | Deploy | AWS Lambda via Mangum (`handler` in `app/main.py`); DB moving to Supabase (branch `feat/add-supabaseDB`) |
 
 **Missing for a paid product:** plans, subscriptions, usage metering, quotas, admin accounts, a self-service portal, and payments.
@@ -49,7 +49,7 @@ Every task lists files, implementation details, tests and a commit message.
 ### ✅ T0.1 Security fixes (done, commits already suggested)
 Hardcoded secrets removed, hashed API credentials and refresh tokens, token type checks, enrollment 4xx fix, S3 keys, per-company rate limiting, Alembic owns schema, test suite, UTF-8 requirements.
 
-### T0.2 Apply the migration and scrub secrets from history (you)
+### T0.2 Apply the migration and scrub secrets from history (you) — migration applied locally; history scrub still to do
 - Back up the DB (`pg_dump`), set `FERNET_KEY` once, run `alembic upgrade head`.
 - Add `JWT_SECRET` and `SECRET_KEY` (different random values) to the `.env` the app reads.
 - Before pushing: squash or rewrite the unpushed commits `704a84c`, `8f7ba40`, `81a9219` that contain secrets, and change the Supabase DB password.
@@ -132,7 +132,7 @@ feat(billing): meter enrollment and verification usage and enforce plan quotas
 
 ## Phase 2: Admin API (`/admin/*`)
 
-### T2.1 Admin accounts and login
+### ✅ T2.1 Admin accounts and login (done: migration `d1a7c3e9f2b4`; uses `bcrypt` directly, `passlib` is unmaintained)
 - `AdminUser`: id (UUID), email (unique), password_hash, is_active, created_at.
 - `POST /admin/auth/login` → JWT `{"sub", "type": "admin"}` signed with a new `ADMIN_JWT_SECRET`; dependency `get_current_admin`.
 - `scripts/create_admin.py --email ...` (password via `getpass`).

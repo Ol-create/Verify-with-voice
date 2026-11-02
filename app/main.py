@@ -10,7 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import settings
 from app.rate_limit import limiter
-from app.routes import enrollment, challenge, language, health, token, verification
+from app.routes import admin, enrollment, challenge, language, health, token, verification
 
 # basicConfig is a no-op on Lambda (it already has a handler), so set the app logger level too
 logging.basicConfig(level=settings.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -32,6 +32,7 @@ app.include_router(health.router, prefix="", tags=["Health"])
 app.include_router(token.router, prefix="/v1", tags=["Token"])
 app.include_router(verification.router, prefix="/v1", tags=["Verification"])
 app.include_router(language.router, prefix="/v1", tags=["Language"])
+app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 
 # ✅ Lambda entrypoint
 handler = Mangum(app)
