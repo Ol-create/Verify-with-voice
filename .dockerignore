@@ -22,3 +22,6 @@ docs/
 .env.*
 !.env.example
 .github/
+
+# Admin web app (deployed separately)
+admin/
