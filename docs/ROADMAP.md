@@ -11,7 +11,7 @@
 | Voice | `GET /v1/challenge` → `POST /v1/enroll-voice` (3 samples, averaged) → `POST /v1/secure-verify-voice`; AASIST anti-spoofing; Whisper transcription; ECAPA embeddings |
 | Rate limiting | slowapi, per company (falls back to per IP), `RATE_LIMIT` setting |
 | Schema | Alembic owns it; `create_all` removed |
-| Tests | 73 tests in `tests/`, everything external mocked; CI runs them |
+| Tests | 99 tests in `tests/`, everything external mocked; CI runs them |
 | Deploy | AWS Lambda via Mangum (`handler` in `app/main.py`); DB moving to Supabase (branch `feat/add-supabaseDB`) |
 
 **Missing for a paid product:** plans, subscriptions, usage metering, quotas, admin accounts, a self-service portal, and payments.
@@ -141,7 +141,7 @@ feat(billing): meter enrollment and verification usage and enforce plan quotas
 feat(admin): add admin users, login and bootstrap script
 ```
 
-### T2.2 Company management
+### ✅ T2.2 Company management (done: usage comes from verification logs until T1.4 adds usage records; plan assignment waits for T1.3/T2.3)
 - `POST /admin/companies` (name, email, optional plan) → returns the first API key + secret once.
 - `GET /admin/companies?status=&q=&page=` list; `GET /admin/companies/{id}` with subscription, credential list, user count, this month's usage.
 - `PATCH /admin/companies/{id}`: edit, `activate`, `suspend`.

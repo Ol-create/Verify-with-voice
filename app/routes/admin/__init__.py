@@ -2,7 +2,8 @@
 """Admin API, mounted at /admin. Every route except login requires get_current_admin."""
 from fastapi import APIRouter
 
-from app.routes.admin import auth
+from app.routes.admin import auth, companies
 
 router = APIRouter()
 router.include_router(auth.router, prefix="/auth")
+router.include_router(companies.router, prefix="/companies")

@@ -18,6 +18,7 @@ import uuid
 
 from app.db import SessionLocal
 from app.models import COMPANY_ACTIVE, COMPANY_SUSPENDED, ApiCredential, Company
+from app.services.companies import CompanyExists, create_company, find_by_name
 from app.services.credentials import active_credentials, issue_credential, revoke_credential
 
 
@@ -76,19 +77,17 @@ def main(argv=None) -> int:
             print(f"Revoked {credential.key_prefix}... ({credential.name}) for {credential.company.name}.")
             return 0
 
-        company = db.query(Company).filter(Company.name == args.name).first()
-
         if args.action == "create":
-            if company:
+            try:
+                company, credential, api_key, api_secret = create_company(db, args.name, args.email)
+            except CompanyExists:
                 print(f"Company '{args.name}' already exists. Use 'add-key' for new credentials.", file=sys.stderr)
                 return 1
-            company = Company(name=args.name, email=args.email, status=COMPANY_ACTIVE)
-            db.add(company)
-            credential, api_key, api_secret = issue_credential(db, company)
             db.commit()
             _print_credentials(company, credential, api_key, api_secret)
             return 0
 
+        company = find_by_name(db, args.name)
         if not company:
             print(f"Company '{args.name}' not found.", file=sys.stderr)
             return 1

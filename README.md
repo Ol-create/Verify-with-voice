@@ -107,6 +107,13 @@ python -m scripts.create_admin --email you@example.com --deactivate      # or --
 
 `POST /admin/auth/login` with `{"email", "password"}` returns an admin token; send it as `Authorization: Bearer <token>`. `GET /admin/auth/me` returns the signed-in admin. Admin tokens and end-user tokens use different secrets, so neither works on the other's routes.
 
+| Admin endpoint | Purpose |
+|---|---|
+| `POST /admin/companies` | Onboard a company (`name`, optional `email`, `status`); returns its first API key and secret once |
+| `GET /admin/companies?status=&q=&page=&page_size=` | List and search companies, with user and active-key counts |
+| `GET /admin/companies/{id}` | Company detail: API keys (prefixes only), user count, this month's verifications and enrollments |
+| `PATCH /admin/companies/{id}` | Edit `name` / `email`, or set `status` to `active`, `suspended` or `pending` (takes effect immediately) |
+
 ### Run
 
 ```bash

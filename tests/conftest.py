@@ -60,10 +60,10 @@ app.db.SessionLocal = TestSessionLocal
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.auth import create_access_token  # noqa: E402
+from app.auth import create_access_token, create_admin_token  # noqa: E402
 from app.db import Base, get_db  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
-from app.models import ApiCredential, Company, User  # noqa: E402
+from app.models import AdminUser, ApiCredential, Company, User  # noqa: E402
 from app.utils.security import display_prefix, hash_credential  # noqa: E402
 
 from fakes import API_KEY, API_SECRET, CHALLENGE, EMBEDDING  # noqa: E402
@@ -136,6 +136,16 @@ def auth_headers(user):
     token = create_access_token(
         {"user_id": str(user.id), "company_id": str(user.company_id), "lang": user.lang}
     )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def admin_headers(db_session):
+    """A signed-in admin (login itself is covered in test_admin.py)."""
+    admin = AdminUser(email="ops@truevoice.test", password_hash="not-used")
+    db_session.add(admin)
+    db_session.commit()
+    token, _ = create_admin_token(admin)
     return {"Authorization": f"Bearer {token}"}
 
 
