@@ -95,3 +95,21 @@ class CompanyCreated(BaseModel):
     company: CompanyDetail
     api_key: str = Field(description="Shown once. Only its hash is stored.")
     api_secret: str = Field(description="Shown once. Only its hash is stored.")
+
+
+class CredentialCreate(BaseModel):
+    name: str = Field(default="default", min_length=1, max_length=64, description="A label, e.g. \"production\"")
+
+    @field_validator("name")
+    @classmethod
+    def name_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name can't be empty")
+        return value
+
+
+class CredentialCreated(BaseModel):
+    credential: CredentialOut
+    api_key: str = Field(description="Shown once. Only its hash is stored.")
+    api_secret: str = Field(description="Shown once. Only its hash is stored.")

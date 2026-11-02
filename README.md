@@ -113,6 +113,9 @@ python -m scripts.create_admin --email you@example.com --deactivate      # or --
 | `GET /admin/companies?status=&q=&page=&page_size=` | List and search companies, with user and active-key counts |
 | `GET /admin/companies/{id}` | Company detail: API keys (prefixes only), user count, this month's verifications and enrollments |
 | `PATCH /admin/companies/{id}` | Edit `name` / `email`, or set `status` to `active`, `suspended` or `pending` (takes effect immediately) |
+| `POST /admin/companies/{id}/credentials` | Issue another API key (optional `name`, e.g. for rotation); returns the key and secret once |
+| `GET /admin/companies/{id}/credentials?include_revoked=` | The company's API keys, newest first: name, prefix, created, last used, revoked |
+| `POST /admin/credentials/{id}/revoke` | Revoke a key; it and tokens already issued with it stop working at once |
 
 ### Run
 

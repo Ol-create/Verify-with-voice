@@ -16,8 +16,12 @@ from app.routes.admin.schemas import (
     CompanyPage,
     CompanyStatus,
     CompanyUpdate,
+    CredentialCreate,
+    CredentialCreated,
+    CredentialOut,
 )
 from app.services.companies import CompanyExists, create_company, find_by_name, month_start, usage_since
+from app.services.credentials import issue_credential
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -145,3 +149,33 @@ async def update_company(
     if changes:
         logger.info("Admin %s updated company %s: %s", admin.email, company.id, ", ".join(sorted(changes)))
     return _detail(db, company)
+
+
+@router.post("/{company_id}/credentials", response_model=CredentialCreated, status_code=status.HTTP_201_CREATED)
+async def create_credential(
+    company_id: uuid.UUID,
+    payload: CredentialCreate = CredentialCreate(),
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Issue another API key, e.g. to rotate one without downtime. The key and secret are in this response only."""
+    company = _get_company(db, company_id)
+    credential, api_key, api_secret = issue_credential(db, company, payload.name)
+    db.commit()
+    logger.info("Admin %s issued key %s (%s) to company %s", admin.email, credential.id, credential.key_prefix, company.id)
+    return {"credential": credential, "api_key": api_key, "api_secret": api_secret}
+
+
+@router.get("/{company_id}/credentials", response_model=list[CredentialOut])
+async def list_credentials(
+    company_id: uuid.UUID,
+    include_revoked: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """The company's API keys, newest first. Only the non-secret prefix of each key is shown."""
+    _get_company(db, company_id)
+    query = db.query(ApiCredential).filter(ApiCredential.company_id == company_id)
+    if not include_revoked:
+        query = query.filter(ApiCredential.revoked_at.is_(None))
+    return query.order_by(ApiCredential.created_at.desc()).all()

@@ -11,7 +11,7 @@
 | Voice | `GET /v1/challenge` → `POST /v1/enroll-voice` (3 samples, averaged) → `POST /v1/secure-verify-voice`; AASIST anti-spoofing; Whisper transcription; ECAPA embeddings |
 | Rate limiting | slowapi, per company (falls back to per IP), `RATE_LIMIT` setting |
 | Schema | Alembic owns it; `create_all` removed |
-| Tests | 99 tests in `tests/`, everything external mocked; CI runs them |
+| Tests | 117 tests in `tests/`, everything external mocked; CI runs them |
 | Deploy | AWS Lambda via Mangum (`handler` in `app/main.py`); DB moving to Supabase (branch `feat/add-supabaseDB`) |
 
 **Missing for a paid product:** plans, subscriptions, usage metering, quotas, admin accounts, a self-service portal, and payments.
@@ -157,7 +157,7 @@ feat(admin): add company onboarding and management endpoints
 feat(admin): manage plans and assign subscriptions
 ```
 
-### T2.4 Credentials
+### ✅ T2.4 Credentials (done)
 - `POST /admin/companies/{id}/credentials` (shown once), `GET` list (prefix, name, last used), `POST /admin/credentials/{id}/revoke`.
 ```
 feat(admin): issue, list and revoke company API credentials
@@ -175,7 +175,7 @@ feat(admin): add platform stats, usage and verification log endpoints
 
 ## Phase 3: Admin web app (`admin/`)
 
-### T3.1 Scaffold and login
+### ✅ T3.1 Scaffold and login (done: shadcn/ui; React Query left until a page needs client-side refreshes)
 - `npx create-next-app@latest admin --typescript --app --eslint`; one UI kit (Mantine or shadcn/ui); `@tanstack/react-query` for client-side refreshes.
 - Login = a Server Action that calls `POST /admin/auth/login` and stores the admin JWT in an **httpOnly, Secure, SameSite=Strict cookie**; the browser never sees the token.
 - `lib/api.ts` (server-only): reads the cookie, calls the API at `TRUEVOICE_API_URL` (a server env var, not `NEXT_PUBLIC_`), maps 401 to a redirect to `/login`.
